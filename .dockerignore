@@ -1,0 +1,10 @@
+.git/
+target/
+specs/
+docs/
+.claude/
+.specify/
+Dockerfile*
+.dockerignore
+*.log*
+.env*

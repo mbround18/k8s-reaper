@@ -1,0 +1,19 @@
+[package]
+name = "k8s-reaper"
+description = "Finds workloads stuck crash-looping and reports or reaps them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+reaper-core.workspace = true
+reaper-flux.workspace = true
+reaper-kube.workspace = true
+reaper-observability.workspace = true
+
+[lints]
+workspace = true

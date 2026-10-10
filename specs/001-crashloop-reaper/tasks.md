@@ -12,16 +12,16 @@ parallel (different files, no unfinished dependency).
 
 ## Phase 1: Setup
 
-- [ ] T001 Create workspace `Cargo.toml` (resolver 3, edition 2024, shared `[workspace.dependencies]` and `[workspace.lints]` with clippy pedantic warnings) and `rust-toolchain.toml` (stable 1.99, rustfmt, clippy)
-- [ ] T002 Create empty crates `crates/reaper-core`, `crates/reaper-kube`, `crates/reaper-flux`, `crates/reaper-observability` and binary `apps/k8s-reaper` (clap skeleton with `run` and `crd` subcommands); `reaper-core` has no dependency other than `serde`, `serde_json`, `thiserror`
-- [ ] T003 [P] Write `Makefile`:
+- [X] T001 Create workspace `Cargo.toml` (resolver 3, edition 2024, shared `[workspace.dependencies]` and `[workspace.lints]` with clippy pedantic warnings) and `rust-toolchain.toml` (stable 1.99, rustfmt, clippy)
+- [X] T002 Create empty crates `crates/reaper-core`, `crates/reaper-kube`, `crates/reaper-flux`, `crates/reaper-observability` and binary `apps/k8s-reaper` (clap skeleton with `run` and `crd` subcommands); `reaper-core` has no dependency other than `serde`, `serde_json`, `thiserror`
+- [X] T003 [P] Write `Makefile`:
   - targets `build` (depends on `gc`), `test`, `test-integration` (`STORY=` filter), `lint`, `image`, `dev-cluster`, `dev-load`, `dev-run`;
   - `gc` runs `cargo sweep --time $(GC_DAYS)` (default 14), or prints `cargo install cargo-sweep --locked` when it is missing;
   - `gc` also runs `docker builder prune -f --max-used-space $(GC_DOCKER_KEEP)` (default 40GB), skipped with a note if `docker info` fails;
   - `gc` never exits non-zero.
-- [ ] T004 [P] Write `Dockerfile`: `cargo-chef` planner → cook → builder (release, `--locked`), runtime `gcr.io/distroless/cc-debian12:nonroot`, `ENTRYPOINT ["/k8s-reaper"]`, `USER nonroot`
-- [ ] T005 [P] Add `.github/workflows/ci.yml`: fmt, clippy `-D warnings`, `cargo test`, docker build (no push)
-- [ ] T006 [P] Add a dependency guard test `crates/reaper-core/tests/no_infra_deps.rs`. It parses `cargo metadata` and fails if `reaper-core` depends on `kube`, `k8s-openapi`, `tokio` or `chrono`'s `clock` feature.
+- [X] T004 [P] Write `Dockerfile`: `cargo-chef` planner → cook → builder (release, `--locked`), runtime `gcr.io/distroless/cc-debian12:nonroot`, `ENTRYPOINT ["/k8s-reaper"]`, `USER nonroot`
+- [X] T005 [P] Add `.github/workflows/ci.yml`: fmt, clippy `-D warnings`, `cargo test`, docker build (no push)
+- [X] T006 [P] Add a dependency guard test `crates/reaper-core/tests/no_infra_deps.rs`. It parses `cargo metadata` and fails if `reaper-core` depends on `kube`, `k8s-openapi`, `tokio` or `chrono`'s `clock` feature.
 
 ## Phase 2: Foundational (blocks all stories)
 

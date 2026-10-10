@@ -2,3 +2,10 @@
 **/*.rs.bk
 .env
 .claude/settings.local.json
+*.log
+.env*
+.idea/
+.vscode/
+*.pending-snap
+*.snap.new
+kubeconfig*
