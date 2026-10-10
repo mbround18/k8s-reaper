@@ -28,6 +28,10 @@ spec:
   flux:
     kustomize: true            # disable kustomize reconcile on reaped objects
     helmRelease: true          # suspend owning HelmReleases
+  cronJobs:
+    enabled: true              # observe CronJobs and pause ones that keep failing
+    failingDuration: 6h        # every run failed for this long (10m–7d)
+    minFailedRuns: 3           # and at least this many failed runs (1–1000)
 status:
   observedGeneration: 3
   activeGeneration: 3          # generation in use (lags observedGeneration if invalid)
@@ -77,6 +81,8 @@ YAML to stdout, for the chart).
 | `apps`                | replicasets                               | get, list, watch          |
 | `apps`                | deployments, statefulsets, daemonsets     | get, list, watch, patch   |
 | `apps`                | deployments/scale, statefulsets/scale     | get, patch, update        |
+| `batch`               | cronjobs                                  | get, list, watch, patch   |
+| `batch`               | jobs                                      | get, list, watch          |
 | `autoscaling`         | horizontalpodautoscalers                  | get, list, watch          |
 | `keda.sh`             | scaledobjects                             | get, list, watch          |
 | `helm.toolkit.fluxcd.io` | helmreleases                           | get, list, watch, patch   |
@@ -84,5 +90,7 @@ YAML to stdout, for the chart).
 | `reaper.boop.ninja`    | reaperconfigs                             | get, list, watch          |
 | `reaper.boop.ninja`    | reaperconfigs/status                      | get, patch, update        |
 
-DaemonSets get `patch` only for the reaper's own annotations and labels. No
+DaemonSets get `patch` only for the reaper's own annotations and labels.
+CronJobs get `patch` for those and for `spec.suspend`. Jobs are never patched or
+deleted. No
 `delete`, no access to Secrets, and no `escalate`/`bind`/`impersonate`.

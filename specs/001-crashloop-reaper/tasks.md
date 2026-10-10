@@ -157,7 +157,39 @@ mode; invalid config is refused safely.
 - [ ] T063 [US4] Emit `ConfigApplied`/`ConfigInvalid` Events and the `reaper_config_*` metrics from `apps/k8s-reaper/src/main.rs` wiring
 - [ ] T064 [US4] Write integration test `apps/k8s-reaper/tests/us4_config.rs` (`#[ignore]`): mode flip without restart, namespace `mode=report`, workload `mode=off`, invalid config, own namespace never touched (SC-005)
 
-## Phase 7: Polish and delivery
+## Phase 7: User Story 5 — pause a CronJob that keeps failing (P3)
+
+**Goal**: a CronJob whose every run has failed for `cronJobs.failingDuration`
+(default 6h) with at least `cronJobs.minFailedRuns` (default 3) is suspended in
+full mode and reported in report mode; one restore action resumes it.
+
+**Independent test**: quickstart fixture `cron/failing` with the dev
+thresholds; SC-008.
+
+### Tests first
+
+- [ ] T080 [P] [US5] `detect.rs` tests: the streak starts at the first failed Job after `lastSuccessfulTime`; distinct failed Jobs are counted once via `last-failed-job`; running Jobs are ignored; a success ends the streak; Job pods still never count as crash loops
+- [ ] T081 [P] [US5] `decide.rs` tests:
+  - candidate at exactly 6h and 3 runs; not at 5h59m, and not with 2 runs after 3 days;
+  - already suspended by someone else → state cleared, never a candidate;
+  - `ManagedByController`, opt-out and `ReportOnlyScope` apply, `PartiallyAvailable`/`CannotScaleToZero`/`ManagedByAutoscaler` never do;
+  - shared limits and ceiling with Deployments; Flux holds as for Deployments;
+  - restore annotation and manual `suspend: false` → `Restore`; `cronJobs.enabled: false` stops observation but not restore
+- [ ] T082 [P] [US5] Add CronJob fixtures to the equivalence harness `crates/reaper-core/tests/equivalence.rs` (report writes only reaper keys; identical plan JSON in both modes)
+- [ ] T083 [P] [US5] Kube contract tests: CronJob + Job fixtures (failed, succeeded, active, history-limited) in `crates/reaper-kube/tests/snapshot.rs`; the `spec.suspend` merge patch with resourceVersion precondition in `crates/reaper-kube/tests/writer.rs`
+
+### Implementation
+
+- [ ] T084 [US5] Extend `WorkloadKind` with `CronJob`, add `CronJobView`/`JobView` to `crates/reaper-core/src/model.rs`, and the `failing-since`, `failed-runs`, `last-failed-job` keys to `crates/reaper-core/src/record.rs`
+- [ ] T085 [US5] Add `cronJobs` (`enabled`, `failingDuration` 10m–7d, `minFailedRuns` 1–1000) to `crates/reaper-core/src/config.rs` and the CRD in `crates/reaper-kube/src/crd.rs`; regenerate the CRD golden file
+- [ ] T086 [US5] Implement CronJob streak detection in `detect.rs` and the CronJob paths in `decide.rs` (`SuspendCronJob`/`ResumeCronJob` actions)
+- [ ] T087 [US5] Execute `SuspendCronJob`/`ResumeCronJob` through `ClusterWriter::set_cronjob_suspend` in `crates/reaper-core/src/executor.rs`; emit `JobFailuresObserved`/`JobFailuresRecovered`; `cronjob_suspend`/`cronjob_resume` metrics
+- [ ] T088 [US5] CronJob and Job reflectors in `crates/reaper-kube/src/snapshot.rs` and the suspend patch in `crates/reaper-kube/src/writer.rs`; trigger an immediate cycle when a reaped CronJob's `spec.suspend` turns false
+- [ ] T089 [US5] Add the `cron/failing` dev fixture to `deploy/dev/` and write integration test `apps/k8s-reaper/tests/us5_cronjob.rs` (`#[ignore]`) for SC-008
+
+**Checkpoint**: SC-008 passes on k3d.
+
+## Phase 8: Polish and delivery
 
 - [ ] T070 [P] Write `CONTRIBUTING.md`:
   - setup: toolchain, cargo-sweep, k3d, Flux CLI for dev;
@@ -165,10 +197,10 @@ mode; invalid config is refused safely.
   - testing tiers, `make` targets, release process;
   - signed commits.
 - [ ] T071 [P] Write `docs/guides/getting-started.md` (install via Flux HelmRelease, stay in report mode, read the reports, flip to full)
-- [ ] T072 [P] Write `docs/guides/restoring-a-workload.md`: the one restore command, manual scale-up, "restore then fix" with Flux, shared HelmReleases
-- [ ] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field, opt-out labels, examples for `slam-*`
+- [ ] T072 [P] Write `docs/guides/restoring-a-workload.md`: the one restore command, manual scale-up, manual CronJob resume, "restore then fix" with Flux, shared HelmReleases
+- [ ] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field (including `cronJobs`), opt-out labels, examples for `slam-*`
 - [ ] T074 Measure memory and cycle time against the plan's goals (< 64 MiB, < 1 s for 300 pods) with a synthetic snapshot benchmark in `crates/reaper-core/benches/decide.rs`
-- [ ] T075 Run quickstart.md end to end on k3d and tick SC-001 to SC-005, SC-007
+- [ ] T075 Run quickstart.md end to end on k3d and tick SC-001 to SC-005, SC-007, SC-008
 - [ ] T076 Chart PR in `mbround18/helm-charts` (`charts/k8s-reaper`): CRD from `k8s-reaper crd`, Deployment (Recreate, 1 replica, non-root, read-only fs), RBAC per contracts/config.md, Service, ServiceMonitor, PrometheusRule per contracts/metrics.md, `ReaperConfig/default` from values (`mode: report`). (Outside this repo.)
 - [ ] T077 Fluxified overlay `overlays/services/k8s-reaper/` (namespace, HelmRelease → `charts/k8s-reaper`), then `uv run invoke build test`; deploy in report mode and check SC-006. (Outside this repo, after T076 is merged to the chart repo's `main`.)
 
@@ -178,6 +210,8 @@ mode; invalid config is refused safely.
 - US2 needs US1 (detection and the report path). US3 needs US2 (something to
   restore). US4 needs only Phase 2 and US1; it can run in parallel with
   US2/US3.
+- US5 needs US2 and US3 (record, holds, restore) and the US4 config plumbing
+  for `cronJobs.*`.
 - Full mode must not be enabled anywhere but dev until US3 is done.
 - T076 → T077. Both come after US3, so the deployed build can be switched to
   full mode safely later.
@@ -197,6 +231,6 @@ mode; invalid config is refused safely.
    US1 if the chart pins `mode: report`). It answers "what is crash-looping and
    for how long" right away.
 2. Add US2 and US3 together before anyone sets `mode: full`.
-3. US4 hardens runtime control. Then flip `mode: full`, possibly starting with
+3. US4 hardens runtime control. US5 adds CronJobs on top of the same paths. Then flip `mode: full`, possibly starting with
    `includeNamespaces: [fathom-dev]`. The owner questions in spec.md are
    answered.

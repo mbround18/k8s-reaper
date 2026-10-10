@@ -199,6 +199,57 @@ reported but never acted on, even in full mode.
 5. **Given** no configuration object at all, **When** the reaper starts,
    **Then** it runs in report mode with the documented defaults.
 
+### User Story 5 - Pause a CronJob that keeps failing (Priority: P3)
+
+As the cluster operator, I want a CronJob whose runs have all failed for hours
+to be paused (`spec.suspend: true`) instead of creating a failing Job, and its
+pods, on every schedule tick. Flux must not unpause it, and the way back must be
+the same single restore action as for Deployments.
+
+**Why this priority**: A CronJob that fails every run wastes resources and
+buries real alerts, but each run ends by itself, so it costs less than a crash
+loop. It reuses the US2 and US3 machinery (record, Flux holds, limits, restore)
+and only adds detection and a different "stop" action.
+
+**Independent Test**: In a dev cluster, with the CronJob failing duration set
+to 10 minutes and the minimum failed runs set to 3, create a CronJob scheduled
+every minute whose container exits 1. In report mode it becomes a candidate
+after about 10 minutes and nothing changes. In full mode it gets
+`spec.suspend: true` and the `reaped` state label. Running
+`kubectl annotate cronjob/<name> reaper.boop.ninja/restore=true` sets
+`spec.suspend: false` again and removes every reaper annotation.
+
+**Acceptance Scenarios**:
+
+1. **Given** a CronJob whose most recent finished Job failed, **When** a cycle
+   runs, **Then** the reaper records when the failing streak began (the
+   completion time of the first failed Job after the last success) and counts
+   each distinct failed Job it sees. The CronJob gets the `observed` state and a
+   `JobFailuresObserved` Event.
+2. **Given** a failing streak of at least the failing duration (default 6
+   hours) **and** at least the minimum failed runs (default 3), **When** a
+   cycle runs, **Then** the CronJob becomes a candidate. In report mode the
+   reaper publishes the plan and emits `ReapPlanned`. In full mode it records
+   the reason, sets `spec.suspend: true`, applies the same Flux holds as US2
+   scenarios 2 and 3, sets the `reaped` state, and emits `Reaped`. Jobs that are
+   already running are left alone.
+3. **Given** a failing CronJob, **When** one of its Jobs succeeds, **Then** the
+   streak ends: the state is cleared and `JobFailuresRecovered` is emitted. No
+   recovery window applies, because a success is definitive.
+4. **Given** a CronJob that is already suspended by someone else, **When**
+   cycles run, **Then** the reaper never pauses it, and it clears any
+   observation state it had recorded.
+5. **Given** a paused CronJob, **When** a person sets the restore annotation,
+   or sets `spec.suspend: false` themselves, **Then** the reaper releases its
+   Flux holds, clears its state and emits `Restored`. On a restore annotation
+   the reaper also sets `spec.suspend: false`. The failing streak starts again
+   from zero.
+6. **Given** `cronJobs.enabled: false` in the configuration, **When** cycles
+   run, **Then** CronJobs are not observed. CronJobs that are already paused
+   can still be restored.
+
+---
+
 ### Edge Cases
 
 - **Operator restarts mid-observation**: the crashloop start time is stored on
@@ -238,7 +289,18 @@ reported but never acted on, even in full mode.
 - **API errors** during a cycle: that workload's step fails with
   `ReapFailed`/`RestoreFailed` and a metric. Other workloads in the cycle still
   proceed, and the step is retried next cycle.
-- **Jobs and CronJobs**: their pods are ignored entirely.
+- **Jobs and CronJobs**: their pods never count as crash loops. Standalone
+  Jobs are out of scope. CronJobs are judged by their Jobs' outcomes (US5).
+- **CronJob with a sparse schedule** (for example daily): the failing duration
+  passes long before the minimum failed runs, so it stays `observed` until
+  enough runs have failed. One bad night never pauses a daily job.
+- **Failed Jobs deleted quickly** (`failedJobsHistoryLimit` defaults to 1): the
+  reaper counts failed runs itself as it sees them, recording the last failed
+  Job's name, so history limits do not hide the streak. A Job created and
+  deleted entirely between two cycles is not counted, which only delays a
+  pause.
+- **A long-running Job is still active** when the CronJob is paused: it keeps
+  running. Pausing only stops new runs, and the reaper never deletes Jobs.
 
 ## Requirements _(mandatory)_
 
@@ -359,10 +421,37 @@ reported but never acted on, even in full mode.
   step is disabled, a Flux-managed workload is report-only (`ReportOnlyScope`),
   because scaling without it would just be undone.
 
+**CronJobs**
+
+- **FR-028**: The reaper MUST treat a CronJob as failing when its most recently
+  finished Job failed (Job condition `Failed=True`). The failing streak begins
+  at the completion time of the first failed Job after the CronJob's
+  `status.lastSuccessfulTime`. It is recorded on the CronJob and ends when a Job
+  succeeds.
+- **FR-029**: The reaper MUST count distinct failed Jobs in the streak itself
+  (recording the last one counted), because Job history limits delete old Jobs.
+  A CronJob MUST become a candidate only when the streak has lasted at least the
+  failing duration (default 6 hours) **and** at least the minimum failed runs
+  have been counted (default 3).
+- **FR-030**: Pausing a CronJob MUST mean recording the reason and then setting
+  `spec.suspend: true`. The reaper MUST NOT delete or stop Jobs. A CronJob that
+  is already suspended is never a candidate.
+- **FR-031**: FR-005 to FR-017 apply to CronJobs as workloads, with "scale to
+  0" replaced by "suspend". The skip reasons `CannotScaleToZero`,
+  `PartiallyAvailable` and `ManagedByAutoscaler` never apply to them. Paused
+  CronJobs count toward the same per-cycle limit and reaped ceiling.
+- **FR-032**: The restore annotation on a paused CronJob MUST set
+  `spec.suspend: false` and reverse the Flux holds as in FR-018. A person
+  setting `spec.suspend: false` on a paused CronJob MUST be treated as a restore
+  (the counterpart of FR-019).
+- **FR-033**: CronJob handling MUST be switchable at runtime
+  (`cronJobs.enabled`, default on). Turning it off stops observation but MUST
+  NOT block restoring CronJobs that are already paused.
+
 ### Key Entities
 
 - **Workload**: a Deployment, StatefulSet or DaemonSet that owns crash-looping
-  pods. Attributes: identity, desired and available replicas, Flux management
+  pods, or a CronJob whose Jobs keep failing. Attributes: identity, desired and available replicas, Flux management
   labels, the reaper's recorded state.
 - **Crashloop observation**: when the workload was first seen crash-looping,
   the worst container (name, restart count, last exit) and when it was last
@@ -398,10 +487,17 @@ reported but never acted on, even in full mode.
   opted-out workload, or its own namespace (asserted by integration tests and by
   the absence of reaper write events for those in the cluster audit log).
 - **SC-006**: On roanoke today, the six `slam-prod` Deployments and
-  `fathom-dev/crashloop` show up as candidates in report mode. The failing
-  `ingest` Jobs and the `ImagePullBackOff` pod do not.
+  `fathom-dev/crashloop` show up as candidates in report mode. The
+  `ImagePullBackOff` pod does not. The failing `ingest` Job pods are never crash
+  loop candidates. If their CronJob has failed every run for 6 hours, it shows
+  up as a CronJob candidate (US5).
 - **SC-007**: Core decision logic is covered by deterministic tests that run in
   under 10 seconds with no cluster.
+- **SC-008**: In full mode, a CronJob that has failed every run for at least the
+  failing duration, with at least the minimum failed runs, is suspended within 2
+  cycles and stays suspended through 3 forced Flux reconciles. A CronJob with a
+  successful run inside the window is never suspended. One restore action
+  returns `spec.suspend` to `false` within 1 cycle.
 
 ## Assumptions
 
@@ -418,7 +514,10 @@ reported but never acted on, even in full mode.
   not in the MVP; it can be added later without a contract change.
 - **"Available replica"** follows the workload's own status (`availableReplicas`
   for Deployments, `readyReplicas` for StatefulSets).
-- **Jobs/CronJobs** are out of scope: their pods are ignored, not reported.
+- **Jobs** are out of scope: their pods are ignored, not reported. CronJobs
+  are handled by their Jobs' outcomes (US5; Question 4).
+- **CronJob defaults**: failing duration 6 hours (owner's request); minimum
+  failed runs 3, so one or two failures of an infrequent job never pause it.
 - **Notification** happens through existing alerting: Events and metrics →
   Prometheus rules (shipped with the chart) → Alertmanager → Discord. A direct
   webhook notifier is a later feature.
@@ -436,7 +535,7 @@ reported but never acted on, even in full mode.
 
 ## Owner Decisions
 
-All three open questions were answered on 2026-10-10.
+All four questions were answered on 2026-10-10.
 
 ### Question 1: API group and annotation prefix
 
@@ -456,3 +555,18 @@ reaper never causes an outage.
 the `slam-*` crash-loopers are reaped. The tenant can still opt out with the
 `reaper.boop.ninja/mode` namespace label.
 
+### Question 4: CronJobs
+
+**Answer** (2026-10-10): support CronJobs: "if the cron job is constantly
+failing for 6 hours pausing it". This became US5 (FR-028 to FR-033).
+
+The details below were filled in by default, and the owner can change them:
+
+- "Constantly failing" means every finished run since the streak began has
+  failed: no successful Job in that time.
+- The streak needs at least 3 failed runs as well as 6 hours, so a job that
+  runs every few hours is not paused after one or two failures.
+- Pausing never kills a Job that is already running.
+- Paused CronJobs share the reap limits with Deployments and StatefulSets.
+- The state label, plan annotation, Flux holds and restore action are the same
+  as for Deployments.

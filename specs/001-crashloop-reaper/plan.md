@@ -15,7 +15,8 @@ The reaper is a single-replica Rust operator.
    decision is identical in both modes.
 3. An **executor** in the core runs the plan through ports. Report mode writes
    only the reaper's own annotations, labels and Events. Full mode also scales
-   (via the `scale` subresource) and applies the Flux holds:
+   (via the `scale` subresource), or pauses a CronJob whose runs keep failing
+   (`spec.suspend: true`, US5), and applies the Flux holds:
    - `kustomize.toolkit.fluxcd.io/reconcile: disabled` on kustomize-managed
      objects;
    - a reference-counted `spec.suspend` on HelmReleases.
@@ -181,7 +182,8 @@ apps/
         ├── us1_report.rs
         ├── us2_reap.rs
         ├── us3_restore.rs
-        └── us4_config.rs
+        ├── us4_config.rs
+        └── us5_cronjob.rs
 
 deploy/dev/                   # k3d config + sample crash-looping Deployments (dev only)
 ```
@@ -231,7 +233,9 @@ deploy/dev/                   # k3d config + sample crash-looping Deployments (d
 4. US3: restore paths.
 5. US4: config hot-reload, mode labels, include/exclude, invalid-config
    handling. Partly needed earlier: US1 runs on defaults until this lands.
-6. Docs: guides, CONTRIBUTING; chart PR in helm-charts; HelmRelease in fluxified.
+6. US5: CronJob failure detection and pause/resume, reusing the US2/US3 record,
+   hold and restore paths.
+7. Docs: guides, CONTRIBUTING; chart PR in helm-charts; HelmRelease in fluxified.
 
 ## Complexity Tracking
 

@@ -21,7 +21,7 @@ Snapshot
 
 NamespaceView { name, mode_override: Option<Mode> }      # from label/annotation
 
-WorkloadRef { kind: Deployment|StatefulSet|DaemonSet, namespace, name }
+WorkloadRef { kind: Deployment|StatefulSet|DaemonSet|CronJob, namespace, name }
 
 WorkloadView
   ref: WorkloadRef
@@ -44,6 +44,13 @@ ContainerView
   name, init: bool, ready: bool, restart_count: u32
   waiting_reason: Option<String>
   last_exit: Option<{ code: i32, reason: String }>
+
+CronJobView (a WorkloadView with kind CronJob; no replicas)
+  suspended: bool                     # spec.suspend
+  last_successful_time: Option<Timestamp>
+  jobs: Vec<JobView>                  # Jobs owned by this CronJob (controller ownerRef)
+JobView { name, finished_at: Option<Timestamp>,
+          outcome: Running|Succeeded|Failed, failure_reason: Option<String> }
 
 HelmReleaseView
   ref: NsName, suspended: bool, kustomization: Option<NsName>
@@ -76,6 +83,8 @@ Action =
   | DisableKustomizeReconcile { target: ObjectRef }    # workload or HelmRelease
   | HoldHelmRelease { hr: NsName, suspend: bool }      # suspend only if not already
   | ScaleTo { replicas: u32 }
+  | SuspendCronJob                                     # spec.suspend: true
+  | ResumeCronJob                                      # spec.suspend: false
   | MarkReaped { at }
   | ReleaseHelmRelease { hr: NsName, resume: bool }
   | RestoreKustomizeReconcile { target: ObjectRef, previous: Option<String> }
@@ -117,6 +126,11 @@ executes it. SC-004 compares the two byte for byte.
   annotations once, then ignores the workload).
 - `reaping` with replicas > 0 means "continue reaping", **not** a manual
   scale-up. Only `reaped` treats replicas > 0 as a restore.
+- CronJobs follow the same lifecycle. "Crash-looping seen" means the latest
+  finished Job failed. The candidate threshold is `failingDuration` plus
+  `minFailedRuns`. "Healthy" means a Job succeeded, which clears state at once
+  (no recovery window). On a `reaped` CronJob, `spec.suspend: false` set by
+  someone else is a manual resume (= restore).
 
 ## Validation rules (config)
 
@@ -133,6 +147,9 @@ executes it. SC-004 compares the two byte for byte.
 | `scope.includeNamespaces`     | list of globs; empty = all                   | `[]`                                                            |
 | `flux.kustomize`              | bool                                         | `true`                                                          |
 | `flux.helmRelease`            | bool                                         | `true`                                                          |
+| `cronJobs.enabled`            | bool                                         | `true`                                                          |
+| `cronJobs.failingDuration`    | duration, 10m–7d                             | `6h`                                                            |
+| `cronJobs.minFailedRuns`      | integer 1–1000                               | `3`                                                             |
 
 The CRD schema enforces type, enum and range. The core re-validates and
 returns `ConfigError` (a list of field errors). On error, the last valid config

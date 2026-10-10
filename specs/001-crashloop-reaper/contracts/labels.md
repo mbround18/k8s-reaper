@@ -4,14 +4,14 @@
 
 | Label                    | On                                  | Values                                         |
 | ------------------------ | ----------------------------------- | ---------------------------------------------- |
-| `reaper.boop.ninja/state` | Deployment, StatefulSet, DaemonSet  | `observed`, `candidate`, `reaping`, `reaped`   |
+| `reaper.boop.ninja/state` | Deployment, StatefulSet, DaemonSet, CronJob | `observed`, `candidate`, `reaping`, `reaped`   |
 
 It is absent when the reaper holds no state for the object. Meant for
 selection:
 
 ```bash
-kubectl get deploy,sts,ds -A -l reaper.boop.ninja/state=reaped
-kubectl get deploy,sts,ds -A -l 'reaper.boop.ninja/state in (candidate,reaping,reaped)'
+kubectl get deploy,sts,ds,cronjob -A -l reaper.boop.ninja/state=reaped
+kubectl get deploy,sts,ds,cronjob -A -l 'reaper.boop.ninja/state in (candidate,reaping,reaped)'
 ```
 
 The label sits on the workload's own metadata, never on the pod template, so

@@ -32,9 +32,11 @@ make dev-run         # run the reaper in-cluster in namespace k8s-reaper, report
 | `ds/crashloop`            | DaemonSet crash-looping                                        | `CannotScaleToZero`       |
 | `job/fail`                | Job that fails                                                 | ignored                   |
 | `optout/crashloop`        | Deployment labelled `reaper.boop.ninja/mode=off`                | untouched                 |
+| `cron/failing`            | CronJob `* * * * *`, container exits 1                         | candidate → suspended (full) |
 
-For speed, the dev ReaperConfig uses `crashLoopDuration: 2m` and
-`minRestarts: 3`.
+For speed, the dev ReaperConfig uses `crashLoopDuration: 5m`,
+`minRestarts: 3`, `cronJobs.failingDuration: 10m` and `cronJobs.minFailedRuns:
+3` (the lowest values validation allows).
 
 ## 2. Report mode (US1)
 
@@ -87,8 +89,9 @@ make test-integration STORY=us3_restore # one story
 ## 6. On roanoke (after the chart and HelmRelease land, report mode)
 
 ```bash
-kubectl get deploy,sts,ds -A -l reaper.boop.ninja/state=candidate
+kubectl get deploy,sts,ds,cronjob -A -l reaper.boop.ninja/state=candidate
 ```
 
 Expected (SC-006): the six `slam-prod` Deployments and `fathom-dev/crashloop`.
-Not expected: the `slam-prod/ingest-*` Job pods or `fathom-dev/bad-image`.
+Not expected: the `slam-prod/ingest-*` Job pods or `fathom-dev/bad-image`. The
+`ingest` CronJob appears only if it has failed every run for 6 hours (US5).
