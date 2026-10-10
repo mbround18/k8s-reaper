@@ -1,0 +1,475 @@
+# Feature Specification: MVP Crashloop Reaper
+
+**Feature Branch**: `001-crashloop-reaper`
+
+**Created**: 2026-10-10
+
+**Status**: Draft
+
+**Input**: User description: "A Kubernetes operator that finds workloads stuck
+crash-looping and, depending on mode, reports them or scales them to zero, with
+Flux integration so Flux does not immediately undo the scale-down. Report mode
+by default; full mode acts; one documented action restores a workload."
+
+## Context
+
+The target cluster (roanoke: two-node k3s v1.36, delivered by Flux from
+`mbround18/fluxified`) has workloads that have been crash-looping for days. On
+2026-10-10, `slam-prod` had six Deployments (`audit`, `authz`, `identity`,
+`ingest-serve`, `media`, `venues`) each at about 850 restarts after three days,
+and `fathom-dev/crashloop` had more than 5,000 after 19 days.
+
+The kubelet already backs off restarts (10 s, doubling, capped at 5 minutes),
+and the cap cannot be raised. So a broken workload restarts every 5 minutes
+forever: it uses CPU, pulls images, fills logs, and nothing tells a person.
+Autoscaler-based approaches (KEDA) were rejected. They are configured per
+workload, take ownership of `replicas`, and flap: at zero replicas there are no
+restarts, the metric drops, and the workload is scaled back up.
+
+The reaper is a single cluster-wide watcher. It decides when a workload has been
+broken long enough, says so where the existing alerting (Prometheus →
+Alertmanager → Discord) already looks, and in `full` mode stops the workload in
+a way that Flux will not immediately undo and a person can reverse in one step.
+
+Failed **Jobs** are out of scope. They stop on their own via `backoffLimit`, and
+the cluster already alerts on failed Jobs. `slam-prod/ingest-*` are examples.
+
+## User Scenarios & Testing _(mandatory)_
+
+### User Story 1 - See every long-running crashloop without anything changing (Priority: P1)
+
+As the cluster operator, I want the reaper to tell me which workloads have been
+crash-looping past the threshold and what it would do about each. It must not
+change anything, so I can install it on a production cluster with no staging
+cluster and trust it first.
+
+**Why this priority**: This is the safe default and the first thing deployed.
+On its own it removes "nobody noticed for three days": every candidate shows up
+as an Event, a metric (and therefore a Discord alert), and an annotation on the
+workload.
+
+**Independent Test**: Install in report mode on a cluster with one
+deliberately crash-looping Deployment. After the threshold, the Deployment
+carries a Warning Event and a planned-action annotation describing the exact
+scale-down and Flux changes. The candidate metric is 1. `spec.replicas` and all
+Flux objects are unchanged.
+
+**Acceptance Scenarios**:
+
+1. **Given** report mode and a Deployment whose only pod has been in
+   CrashLoopBackOff for longer than the duration threshold with more restarts
+   than the restart threshold, **When** a cycle runs, **Then** the Deployment
+   gets a Warning Event `ReapPlanned`, a planned-action annotation and the
+   `candidate` state label, and the candidate metric counts it.
+2. **Given** the same Deployment, **When** many cycles run, **Then** its
+   `spec.replicas`, its Flux annotations and any HelmRelease stay exactly as
+   they were.
+3. **Given** a workload that crash-loops for less than the duration threshold,
+   or has fewer restarts than the restart threshold, **When** a cycle runs,
+   **Then** it is recorded as `observed` (crashloop start time noted) but is not
+   a candidate.
+4. **Given** a candidate whose pods become healthy and stay healthy for the
+   recovery window, **When** a cycle runs, **Then** the reaper removes its
+   annotations and label and emits `CrashLoopRecovered`.
+5. **Given** a crash-looping DaemonSet, bare Pod, or Pod owned by anything other
+   than a ReplicaSet→Deployment or a StatefulSet, **When** the thresholds are
+   exceeded, **Then** it is reported with the reason it cannot be acted on.
+   This holds in either mode.
+
+---
+
+### User Story 2 - Stop a broken workload and keep Flux from restarting it (Priority: P2)
+
+As the cluster operator, once I trust the reports, I want to switch to full mode
+and have the reaper scale broken Deployments and StatefulSets to zero. If Flux
+manages the workload, Flux must not scale it straight back up. Everything done
+must be recorded on the objects themselves.
+
+**Why this priority**: This is the point of the tool. It depends on Story 1's
+detection and is only safe after report mode has been observed.
+
+**Independent Test**: Switch the running configuration to full mode (no
+redeploy). For a Flux-kustomize-managed crash-looping Deployment, after one
+cycle: `replicas` is 0, annotations record the original replicas, reason and
+time, and the object carries `kustomize.toolkit.fluxcd.io/reconcile: disabled`.
+Force a Flux reconcile; `replicas` stays 0.
+
+**Acceptance Scenarios**:
+
+1. **Given** full mode and a candidate Deployment with zero available replicas
+   and no Flux labels, **When** a cycle runs, **Then** it is scaled to 0. The
+   original replica count, reason and timestamp are recorded in annotations, it
+   gets the `reaped` state label, and a Warning Event `Reaped` is emitted.
+2. **Given** a candidate that carries the kustomize-controller labels
+   (`kustomize.toolkit.fluxcd.io/name` and `/namespace`), **When** it is reaped,
+   **Then** the object is also annotated
+   `kustomize.toolkit.fluxcd.io/reconcile: disabled`. Any value that annotation
+   had before is recorded.
+3. **Given** a candidate that carries the helm-controller labels
+   (`helm.toolkit.fluxcd.io/name` and `/namespace`), **When** it is reaped,
+   **Then** that HelmRelease gets `spec.suspend: true`. The HelmRelease records
+   which workload(s) the reaper suspended it for. If the HelmRelease is itself
+   kustomize-managed, it also gets the reconcile-disabled annotation, so the
+   parent Kustomization cannot flip `suspend` back.
+4. **Given** full mode, **When** the plan for a workload is computed, **Then**
+   it is identical to the plan report mode would have published for the same
+   inputs (dry-run equivalence).
+5. **Given** more candidates than the per-cycle action limit, **When** a cycle
+   runs, **Then** only that many are reaped (longest-crashing first). The rest
+   get `ReapSkipped` with reason `RateLimited` and are reconsidered next cycle.
+6. **Given** the number of currently reaped workloads is at the configured
+   ceiling, **When** further candidates appear, **Then** they are reported
+   (`ReapSkipped`, reason `ReapCeilingReached`) and not acted on.
+7. **Given** a candidate that still has at least one available replica (for
+   example a bad rollout while old pods still serve traffic), **When** a cycle
+   runs, **Then** it is reported with reason `PartiallyAvailable` and not
+   scaled.
+
+---
+
+### User Story 3 - Bring a workload back with one action (Priority: P2)
+
+As the person who fixed the cause (or who wants to retry), I want one
+documented action that puts a reaped workload back exactly as it was: replicas
+restored, Flux reconciliation re-enabled, HelmRelease resumed. I must not have
+to remember what the reaper changed.
+
+**Why this priority**: Full mode must not ship without a reliable way back.
+The constitution requires every mutation to be reversible in one step.
+
+**Independent Test**: Reap a test Deployment (Story 2), then run
+`kubectl annotate deploy/<name> reaper.bruno.fyi/restore=true`. Within one
+cycle `replicas` equals the recorded original. The reconcile-disabled
+annotation is gone (or restored to its previous value). The HelmRelease is
+unsuspended if no other reaped workload still needs it suspended. All reaper
+annotations and labels are removed and a `Restored` Event is emitted.
+
+**Acceptance Scenarios**:
+
+1. **Given** a reaped workload, **When** a person sets the restore annotation,
+   **Then** the reaper reverses exactly the recorded actions and nothing else.
+   It emits `Restored`, and the workload starts a fresh observation (the full
+   duration threshold applies again before any re-reap).
+2. **Given** a reaped workload, **When** a person scales it up by hand
+   (`replicas` > 0), **Then** the reaper treats that as a restore request: it
+   reverses its Flux changes and clears its state, keeping the replica count
+   the person chose.
+3. **Given** two reaped workloads from the same HelmRelease, **When** only one
+   is restored, **Then** the HelmRelease stays suspended until the last one is
+   restored.
+4. **Given** the restore action on a workload the reaper did not reap, **When**
+   a cycle runs, **Then** the annotation is removed and a `RestoreIgnored` Event
+   explains why. Nothing else changes.
+5. **Given** report mode, **When** a person sets the restore annotation on a
+   previously reaped workload, **Then** the restore still runs. Restore is
+   always allowed, because it returns the cluster to its declared state.
+
+---
+
+### User Story 4 - Control scope and mode without redeploying (Priority: P3)
+
+As the cluster operator, I want to switch mode, change thresholds and exclude
+namespaces or individual workloads at runtime from Git (the cluster is
+GitOps-managed). Teams that own a namespace should be able to opt a workload
+out with a label.
+
+**Why this priority**: The defaults cover the first rollout. Fine control
+matters once full mode is on.
+
+**Independent Test**: Change the mode in the cluster configuration object from
+`report` to `full`; the next cycle acts without a pod restart. Label one
+Deployment `reaper.bruno.fyi/mode=off`; it is never observed, annotated or
+reported. Label a namespace `reaper.bruno.fyi/mode=report`; workloads there are
+reported but never acted on, even in full mode.
+
+**Acceptance Scenarios**:
+
+1. **Given** a running reaper, **When** the configuration's mode or thresholds
+   change, **Then** the next cycle uses the new values with no restart.
+2. **Given** a namespace in the exclude list, the reaper's own namespace, or a
+   namespace or workload with mode `off`, **When** cycles run, **Then** nothing
+   in it is observed, annotated or changed.
+3. **Given** a namespace or workload labelled or annotated with mode `report`,
+   **When** global mode is `full`, **Then** its workloads are only reported. The
+   most restrictive mode always wins; a label can never raise the mode above
+   the global one.
+4. **Given** an invalid configuration change, **When** it is applied, **Then**
+   the reaper keeps using the last valid configuration and reports the problem
+   on the configuration object's status and as an Event and metric.
+5. **Given** no configuration object at all, **When** the reaper starts,
+   **Then** it runs in report mode with the documented defaults.
+
+### Edge Cases
+
+- **Operator restarts mid-observation**: the crashloop start time is stored on
+  the workload, so a restart neither resets nor skips the threshold.
+- **Operator restarts between steps of a reap** (for example scaled, but Flux
+  annotation not yet set): each step is recorded as it completes. The next cycle
+  finishes the remaining steps; it does not start over or double-apply.
+- **Flapping container** (runs a few seconds, then crashes): crashloop state
+  only clears after the recovery window of continuous health, not on a single
+  healthy observation.
+- **Init container crash-looping** (`Init:CrashLoopBackOff`): counts the same as
+  an app container.
+- **Image pull failures** (`ImagePullBackOff`, `ErrImagePull`): not crash loops,
+  out of scope. Nothing restarts, so nothing is wasted.
+- **Workload already at zero replicas**: nothing to do; never a candidate.
+- **HPA on the workload**: scaling to 0 pauses the HPA (HPA does not act on a
+  target at 0). Restore sets the recorded replicas and the HPA resumes. A KEDA
+  ScaledObject or another autoscaler that would fight the scale-down makes the
+  workload report-only (`ManagedByAutoscaler`).
+- **Workload owned by another controller** (the Deployment or StatefulSet has a
+  controller ownerReference, as with operator-managed databases): report-only
+  (`ManagedByController`). Acting would race that controller.
+- **Applied by plain `kubectl apply`** (no Flux labels, as `slam-prod` is today):
+  scaled with no Flux step. The next `kubectl apply` from the owner's pipeline
+  restores the declared replicas. If the workload is still broken, it is
+  observed again from scratch.
+- **Object deleted or recreated by its owner** while reaped: the recorded state
+  goes with it. If a HelmRelease still lists that workload, the reaper drops it
+  from the list and resumes the HelmRelease if nothing else needs it suspended.
+- **HelmRelease already suspended by a person** before the reaper acted: the
+  reaper records that it did not suspend it, and restore leaves it suspended.
+- **Reconcile annotation already set by a person** (`disabled`): the previous
+  value is recorded, and restore puts that value back rather than deleting it.
+- **Mass failure** (for example a registry or node outage makes many workloads
+  crash at once): the per-cycle limit and the reaped ceiling bound the damage.
+  The remaining candidates are reported, not acted on.
+- **API errors** during a cycle: that workload's step fails with
+  `ReapFailed`/`RestoreFailed` and a metric. Other workloads in the cycle still
+  proceed, and the step is retried next cycle.
+- **Jobs and CronJobs**: their pods are ignored entirely.
+
+## Requirements _(mandatory)_
+
+### Functional Requirements
+
+**Detection**
+
+- **FR-001**: The reaper MUST treat a container (app or init) as crash-looping
+  when it is not ready and either is waiting with reason `CrashLoopBackOff` or
+  last terminated with an error. Its restart count is taken from the container
+  status.
+- **FR-002**: The reaper MUST resolve each crash-looping pod to its workload:
+  Pod → ReplicaSet → Deployment, Pod → StatefulSet, or Pod → DaemonSet. Pods
+  owned by Jobs are ignored. Bare pods and other owners are reported as
+  unsupported.
+- **FR-003**: The reaper MUST record when it first observed a workload
+  crash-looping, persistently on the workload, and MUST NOT reset that time
+  unless the workload has been healthy for the full recovery window (default 10
+  minutes).
+- **FR-004**: A workload MUST become a candidate only when it has been
+  crash-looping for at least the duration threshold (default 30 minutes) **and**
+  a crash-looping container's restart count is at least the restart threshold
+  (default 10).
+
+**Decision (identical in both modes)**
+
+- **FR-005**: For each candidate the reaper MUST compute a plan: an ordered list
+  of concrete actions (scale to 0; set or record the kustomize reconcile
+  annotation; suspend a named HelmRelease), or a skip with exactly one reason
+  from a fixed set (`OptedOut`, `ReportOnlyScope`, `CannotScaleToZero`,
+  `UnsupportedOwner`, `ManagedByController`, `ManagedByAutoscaler`,
+  `PartiallyAvailable`, `RateLimited`, `ReapCeilingReached`).
+- **FR-006**: The plan MUST be a pure function of the observed objects, the
+  configuration and the current time. Report mode and full mode MUST produce the
+  same plan for the same inputs (dry-run equivalence).
+- **FR-007**: The reaper MUST NOT act on a workload with at least one available
+  replica (`PartiallyAvailable`).
+- **FR-008**: DaemonSets MUST be report-only (`CannotScaleToZero`).
+
+**Modes and scope**
+
+- **FR-009**: Global mode MUST be `report` (default) or `full`, read at runtime
+  from cluster configuration and re-read without a restart.
+- **FR-010**: Namespaces and workloads MAY declare mode `off` or `report` with
+  the `reaper.bruno.fyi/mode` label or annotation. The effective mode MUST be
+  the most restrictive of global, namespace and workload (`off` < `report` <
+  `full`).
+- **FR-011**: The reaper MUST NEVER observe or act on its own namespace,
+  whatever the configuration says. It MUST skip namespaces in the exclude list
+  (default `kube-system`, `kube-public`, `kube-node-lease`, `flux-system`). If an
+  include list is set (glob patterns, e.g. `slam-*`), it MUST consider only
+  matching namespaces.
+- **FR-012**: In report mode the reaper MUST NOT change `replicas`, Flux
+  annotations or HelmReleases. Its only writes are its own `reaper.bruno.fyi/*`
+  annotations and labels, and Events.
+
+**Action (full mode)**
+
+- **FR-013**: When reaping, the reaper MUST first record on the workload the
+  original replica count, the reason (container, restart count, crashloop start)
+  and the reap time. It then scales to 0 and sets the `reaped` state label.
+- **FR-014**: If the workload has both kustomize-controller labels, the reaper
+  MUST set `kustomize.toolkit.fluxcd.io/reconcile: disabled` on it and record
+  the previous value of that annotation (or that there was none).
+- **FR-015**: If the workload has both helm-controller labels, the reaper MUST
+  set `spec.suspend: true` on that HelmRelease (only if it was not already
+  suspended). It MUST record on the HelmRelease the set of workloads it is
+  suspended for, and whether the reaper or someone else suspended it. If the
+  HelmRelease carries kustomize-controller labels, FR-014 applies to the
+  HelmRelease object too.
+- **FR-016**: Each completed step MUST be recorded before the next begins, so an
+  interrupted reap is completed, not repeated, on the next cycle.
+- **FR-017**: The reaper MUST perform at most the configured number of reaps per
+  cycle (default 1) and hold at most the configured number of workloads reaped
+  at once (default 5). Ordering MUST be deterministic: longest crash-looping
+  first, then namespace/name.
+
+**Restore**
+
+- **FR-018**: Setting annotation `reaper.bruno.fyi/restore` (any non-empty
+  value) on a reaped workload MUST make the reaper, within one cycle, reverse
+  exactly the recorded actions. It scales back to the original replicas, restores
+  the previous reconcile annotation value, and removes the workload from the
+  HelmRelease's list (unsuspending it only when the list is empty and the reaper
+  was the one that suspended it). It then removes all of its own annotations and
+  labels from the workload and emits `Restored`.
+- **FR-019**: A manual scale-up of a reaped workload MUST be treated as a
+  restore that keeps the person's replica count.
+- **FR-020**: Restore MUST work in every mode, including report, and MUST NOT
+  be rate-limited.
+
+**Reporting**
+
+- **FR-021**: Every state change (observed, candidate/planned, reaped, skipped,
+  restored, recovered, failed) MUST emit a Kubernetes Event on the workload,
+  using the reasons in the Events contract.
+- **FR-022**: The reaper MUST expose metrics (see Metrics contract) for
+  scraping, sufficient for an alert rule per workload on "planned",
+  "reaped" and "action failed". It MUST also export them over OpenTelemetry when
+  an OTLP endpoint is configured.
+- **FR-023**: The reaper MUST label workloads with their state
+  (`reaper.bruno.fyi/state=observed|candidate|reaped`) so that
+  `kubectl get deploy,sts -A -l reaper.bruno.fyi/state=reaped` lists everything
+  it holds stopped.
+- **FR-024**: The reaper MUST publish a summary on its configuration object's
+  status: effective config generation, last cycle time, counts per state, and a
+  validity condition.
+- **FR-025**: The reaper MUST expose liveness and readiness endpoints. It is
+  ready only after its caches have synced and it has a valid configuration.
+
+**Configuration**
+
+- **FR-026**: With no configuration object present, the reaper MUST run with the
+  documented defaults (report mode). An invalid object MUST NOT replace the last
+  valid configuration.
+- **FR-027**: Flux integration MUST be switchable at runtime: the kustomize
+  and HelmRelease steps are separately enabled (default both on). When a needed
+  step is disabled, a Flux-managed workload is report-only (`ReportOnlyScope`),
+  because scaling without it would just be undone.
+
+### Key Entities
+
+- **Workload**: a Deployment, StatefulSet or DaemonSet that owns crash-looping
+  pods. Attributes: identity, desired and available replicas, Flux management
+  labels, the reaper's recorded state.
+- **Crashloop observation**: when the workload was first seen crash-looping,
+  the worst container (name, restart count, last exit) and when it was last
+  seen healthy.
+- **Plan**: the decision for one workload in one cycle. Either an ordered list
+  of actions, or a skip with one reason.
+- **Reap record**: what was actually done to a workload: original replicas,
+  reason, time, previous reconcile annotation, HelmRelease reference and
+  whether the reaper suspended it. It is enough to reverse the reap.
+- **HelmRelease hold**: on a HelmRelease, the set of workloads the reaper
+  suspended it for and whether the suspension was the reaper's.
+- **Reaper configuration**: cluster-wide mode, thresholds, scope, limits and
+  Flux toggles, plus status.
+
+## Success Criteria _(mandatory)_
+
+### Measurable Outcomes
+
+- **SC-001**: In report mode, every workload crash-looping past the threshold
+  is visible within 2 cycles (≤ 2 minutes at defaults) as an Event, a metric
+  series and a state label. Zero changes are made to replicas or Flux objects
+  (verified by diffing those fields before and after a 24-hour run).
+- **SC-002**: In full mode, a qualifying workload stops restarting within 2
+  cycles of becoming a candidate. It stays at zero through at least 3 forced
+  Flux reconciles.
+- **SC-003**: One restore action returns a reaped workload to its exact
+  pre-reap replicas, reconcile annotation and HelmRelease suspension state
+  within 1 cycle, in 100% of the integration test scenarios.
+- **SC-004**: For the same recorded inputs, the plan published in report mode
+  and the plan executed in full mode are identical. This is asserted for every
+  core test case.
+- **SC-005**: The reaper never changes an object in an excluded namespace, an
+  opted-out workload, or its own namespace (asserted by integration tests and by
+  the absence of reaper write events for those in the cluster audit log).
+- **SC-006**: On roanoke today, the six `slam-prod` Deployments and
+  `fathom-dev/crashloop` show up as candidates in report mode. The failing
+  `ingest` Jobs and the `ImagePullBackOff` pod do not.
+- **SC-007**: Core decision logic is covered by deterministic tests that run in
+  under 10 seconds with no cluster.
+
+## Assumptions
+
+- **Defaults**: duration threshold 30 minutes; restart threshold 10 (about 25
+  minutes of kubelet backoff); recovery window 10 minutes; cycle interval 60 s;
+  1 reap per cycle; at most 5 workloads reaped at once.
+- **Annotation/label/API prefix** is `reaper.bruno.fyi`, a domain the owner
+  controls (see Question 1).
+- **Configuration lives in a cluster-scoped custom resource** with a single
+  instance named `default`. It is rendered by the Helm chart and changed through
+  Git like everything else. Process settings (metrics port, log level, OTLP
+  endpoint) come from flags/env.
+- **One replica** of the reaper runs (Recreate strategy). Leader election is
+  not in the MVP; it can be added later without a contract change.
+- **"Available replica"** follows the workload's own status (`availableReplicas`
+  for Deployments, `readyReplicas` for StatefulSets).
+- **Jobs/CronJobs** are out of scope: their pods are ignored, not reported.
+- **Notification** happens through existing alerting: Events and metrics →
+  Prometheus rules (shipped with the chart) → Alertmanager → Discord. A direct
+  webhook notifier is a later feature.
+- **Flux behaviour**: an in-cluster object annotated
+  `kustomize.toolkit.fluxcd.io/reconcile: disabled` is skipped by
+  kustomize-controller. A suspended HelmRelease is skipped by helm-controller.
+  Both are documented Flux v2 behaviour.
+- **Restore before fix**: while a workload is reaped and reconcile-disabled, a
+  fix pushed to Git does not reach it. The user guide says: restore, then let
+  Flux apply the fix (or restore after pushing it).
+- **Tenant namespaces** (`slam-*`) are in scope like any other namespace,
+  because they are the motivating case (see Question 3).
+- **Delivery**: Helm chart in `mbround18/helm-charts` (`charts/k8s-reaper`),
+  installed by a HelmRelease in `fluxified`. Neither is built in this feature.
+
+## Open Questions for the Owner
+
+These are the only points left open. Each has a default (above) that the plan
+uses until answered.
+
+### Question 1: API group and annotation prefix
+
+**Context**: Every annotation, label, Event reporter and the CRD group use one
+DNS prefix. Changing it after release is a breaking change.
+
+| Option | Answer                            | Implications                                  |
+| ------ | --------------------------------- | --------------------------------------------- |
+| A      | `reaper.bruno.fyi` (default)      | Owner's personal domain; short                |
+| B      | `reaper.boop.ninja`               | Groups it with the other boop.ninja services  |
+| Custom | Another domain the owner controls | Any DNS subdomain the owner controls          |
+
+### Question 2: Act on partially available workloads?
+
+**Context**: FR-007 never scales a workload that still has an available
+replica. A bad rollout can leave new pods crash-looping forever while old pods
+keep serving. The reaper reports that but leaves it alone.
+
+| Option | Answer                                                 | Implications                                                                     |
+| ------ | ------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| A      | Never act; report only (default)                       | No reaper-caused outage; stuck rollouts still restart every 5 minutes            |
+| B      | As A, plus a distinct "stuck rollout" Event and alert  | Same safety, clearer signal; small extra scope                                   |
+| C      | Allow acting on partial workloads per-namespace opt-in | Stops the waste, but scaling to 0 also kills the healthy pods: a real outage     |
+
+### Question 3: Tenant namespaces in full mode
+
+**Context**: The `slam-*` namespaces belong to a tenant that deploys from its
+own repository. The reaper scaling the tenant's Deployments to zero is a change
+to another team's workloads.
+
+| Option | Answer                                                        | Implications                                     |
+| ------ | ------------------------------------------------------------- | ------------------------------------------------ |
+| A      | Treat like any namespace (default)                            | Stops the six crash-loopers once full mode is on |
+| B      | Report-only for `slam-*` (namespace label `mode=report`)      | Tenant is alerted, nothing changed for them      |
+| C      | Act, and also notify the tenant through their own alert route | Needs a tenant-facing Alertmanager route         |

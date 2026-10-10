@@ -1,0 +1,202 @@
+# Tasks: MVP Crashloop Reaper
+
+**Input**: [plan.md](./plan.md), [spec.md](./spec.md), [research.md](./research.md),
+[data-model.md](./data-model.md), [contracts/](./contracts/), [quickstart.md](./quickstart.md)
+
+**Tests**: Required. The constitution (III) makes core logic test-first. Within
+each story, test tasks come first and must fail before the implementation
+tasks that follow.
+
+Format: `- [ ] T### [P?] [US?] description with path`. `[P]` means it can run in
+parallel (different files, no unfinished dependency).
+
+## Phase 1: Setup
+
+- [ ] T001 Create workspace `Cargo.toml` (resolver 3, edition 2024, shared `[workspace.dependencies]` and `[workspace.lints]` with clippy pedantic warnings) and `rust-toolchain.toml` (stable 1.99, rustfmt, clippy)
+- [ ] T002 Create empty crates `crates/reaper-core`, `crates/reaper-kube`, `crates/reaper-flux`, `crates/reaper-observability` and binary `apps/k8s-reaper` (clap skeleton with `run` and `crd` subcommands); `reaper-core` has no dependency other than `serde`, `serde_json`, `thiserror`
+- [ ] T003 [P] Write `Makefile`:
+  - targets `build` (depends on `gc`), `test`, `test-integration` (`STORY=` filter), `lint`, `image`, `dev-cluster`, `dev-load`, `dev-run`;
+  - `gc` runs `cargo sweep --time $(GC_DAYS)` (default 14), or prints `cargo install cargo-sweep --locked` when it is missing;
+  - `gc` also runs `docker builder prune -f --max-used-space $(GC_DOCKER_KEEP)` (default 40GB), skipped with a note if `docker info` fails;
+  - `gc` never exits non-zero.
+- [ ] T004 [P] Write `Dockerfile`: `cargo-chef` planner → cook → builder (release, `--locked`), runtime `gcr.io/distroless/cc-debian12:nonroot`, `ENTRYPOINT ["/k8s-reaper"]`, `USER nonroot`
+- [ ] T005 [P] Add `.github/workflows/ci.yml`: fmt, clippy `-D warnings`, `cargo test`, docker build (no push)
+- [ ] T006 [P] Add a dependency guard test `crates/reaper-core/tests/no_infra_deps.rs`. It parses `cargo metadata` and fails if `reaper-core` depends on `kube`, `k8s-openapi`, `tokio` or `chrono`'s `clock` feature.
+
+## Phase 2: Foundational (blocks all stories)
+
+- [ ] T010 Write tests first in `crates/reaper-core/src/config.rs`: defaults match data-model; duration parsing (`90s`, `30m`, `1h30m`, invalid); range validation returns all field errors
+- [ ] T011 Implement `Config`, `Mode` (`Off < Report < Full`), duration parsing and validation in `crates/reaper-core/src/config.rs`
+- [ ] T012 [P] Implement the core input model (`Snapshot`, `WorkloadView`, `PodView`, `ContainerView`, `FluxRefs`, `HelmReleaseView`, `NamespaceView`) and test fixture builders in `crates/reaper-core/src/model.rs` and `crates/reaper-core/src/testing.rs` (`#[cfg(test)]` + `pub` behind a `testing` module for adapter tests)
+- [ ] T013 Write tests first, then implement the annotation codec in `crates/reaper-core/src/record.rs`. It encodes and decodes every key in contracts/annotations.md, round-trips, and rejects malformed values without panicking.
+- [ ] T014 [P] Define `Plan`, `Action`, `SkipReason`, `Transition`, `CyclePlan`, with stable JSON serialisation (snapshot tests via `insta`), in `crates/reaper-core/src/plan.rs`
+- [ ] T015 [P] Define ports `ClusterWriter`, `EventSink` and `Telemetry` (native `async fn`, no runtime) in `crates/reaper-core/src/ports.rs`, with in-memory fakes in `crates/reaper-core/src/testing.rs`
+- [ ] T016 [P] Define the `ReaperConfig` CustomResource (spec/status per contracts/config.md, `schemars` ranges and enums) and its conversion to `reaper_core::Config` in `crates/reaper-kube/src/crd.rs`. Wire `k8s-reaper crd` to print the YAML. Add a golden-file test `crates/reaper-kube/tests/crd_golden.rs`.
+- [ ] T017 [P] Set up tracing in `crates/reaper-observability/src/tracing.rs`: JSON/text logs, OTLP traces when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
+- [ ] T018 [P] Add the Axum server in `crates/reaper-observability/src/http.rs` with `/healthz`, `/readyz` (readiness flag from a shared handle) and `/metrics`; add a unit test using `tower::ServiceExt::oneshot`
+
+**Checkpoint**: core types, config, codec, ports and HTTP skeleton exist; `make test` is green.
+
+## Phase 3: User Story 1 — report every long crash loop, change nothing (P1) 🎯 MVP
+
+**Goal**: in report mode, candidates show up as Events, metrics, state labels
+and a `plan` annotation. No replicas or Flux object changes.
+
+**Independent test**: quickstart §2. Integration `apps/k8s-reaper/tests/us1_report.rs`.
+
+### Tests first
+
+- [ ] T020 [P] [US1] `crates/reaper-core/src/detect.rs` tests:
+  - FR-001 container classification: waiting CrashLoopBackOff, terminated Error/OOMKilled, init container, ImagePullBackOff (no), ready (no);
+  - FR-002 owner resolution: Deployment via ReplicaSet, StatefulSet, DaemonSet, Job (ignored), bare pod (unsupported).
+- [ ] T021 [P] [US1] `crates/reaper-core/src/decide.rs` tests, US1 scenarios 1–5:
+  - under duration → `observed`; under restarts → `observed`; both met → `candidate`;
+  - flapping does not reset `crashloop-since`; recovery only after `recoveryWindow` (FR-003);
+  - DaemonSet → `CannotScaleToZero`; `PartiallyAvailable`; `ManagedByController`; `ManagedByAutoscaler` (KEDA);
+  - excluded namespace, own namespace, `includeNamespaces` globs → nothing.
+- [ ] T022 [P] [US1] Dry-run-equivalence harness in `crates/reaper-core/tests/equivalence.rs` (SC-004). For every fixture in the decide tests, it runs the executor with fake ports in `Report` and `Full` and asserts identical published plan JSON. In `Report`, the fake `ClusterWriter` must receive only `reaper.bruno.fyi/*` annotation/label writes (FR-012).
+- [ ] T023 [P] [US1] Snapshot-mapping contract tests in `crates/reaper-kube/tests/snapshot.rs`. They use JSON fixtures in `crates/reaper-kube/tests/fixtures/` taken from scrubbed live shapes (slam-prod Deployment/ReplicaSet/Pod, fathom-dev crashloop, Job pod, ImagePullBackOff pod).
+- [ ] T024 [P] [US1] Writer contract test in `crates/reaper-kube/tests/writer.rs` using a `tower-test` mock. Annotation/label merge patches carry a `resourceVersion` precondition and field manager `k8s-reaper`.
+
+### Implementation
+
+- [ ] T025 [US1] Implement container classification and owner resolution in `crates/reaper-core/src/detect.rs`
+- [ ] T026 [US1] Implement `decide()` for the observe/candidate/recover/skip paths. Ordering is deterministic (longest crash-looping first, then namespace/name), and the `would` actions are computed for every candidate (scale, kustomize, HelmRelease per FluxRefs and `flux.*` toggles, FR-027). Code goes in `crates/reaper-core/src/decide.rs`.
+- [ ] T027 [US1] Implement the executor's report path in `crates/reaper-core/src/executor.rs`: publish the plan annotation, state label, transition Events and telemetry; the mode gate stops before any `Action` that is not a reaper-annotation write
+- [ ] T028 [US1] Implement reflectors and snapshot building in `crates/reaper-kube/src/snapshot.rs`:
+  - Pods, ReplicaSets, Deployments, StatefulSets, DaemonSets, Namespaces, HPAs;
+  - KEDA ScaledObjects only if the CRD is discovered;
+  - HelmReleases via the Flux adapter type;
+  - mode labels/annotations read from namespaces and workloads.
+- [ ] T029 [US1] Implement `ClusterWriter` for annotation and label patches in `crates/reaper-kube/src/writer.rs`
+- [ ] T030 [P] [US1] Implement `EventSink` over the `events.k8s.io/v1` Recorder (reporting controller `reaper.bruno.fyi/k8s-reaper`) in `crates/reaper-kube/src/events.rs`
+- [ ] T031 [P] [US1] Implement `Telemetry` in `crates/reaper-observability/src/telemetry.rs`: every metric in contracts/metrics.md via `prometheus-client`, mirrored to OTel meters, with stale series removed when a state clears. Add a test that the exposition contains exactly the contracted names and labels.
+- [ ] T032 [US1] Wire `run` in `apps/k8s-reaper/src/main.rs`:
+  - clap flags/env per contracts/config.md;
+  - build adapters, then the loop: wait for caches, snapshot, `decide`, executor;
+  - interval from config; readiness set after first cycle;
+  - built-in defaults (report mode) while ReaperConfig is absent.
+- [ ] T033 [US1] Add k3d dev setup and fixtures in `deploy/dev/`: `k3d.yaml`, Flux install, dev ReaperConfig with short thresholds, and the fixtures table from quickstart §1
+- [ ] T034 [US1] Write integration test `apps/k8s-reaper/tests/us1_report.rs` (`#[ignore]`). It covers US1 scenarios 1–5, and checks that replicas and Flux objects are unchanged after N cycles (SC-001).
+
+**Checkpoint**: deployable in report mode. This is the MVP increment.
+
+## Phase 4: User Story 2 — reap and hold Flux off (P2)
+
+**Goal**: full mode scales candidates to 0 and blocks Flux, recording every step.
+
+**Independent test**: quickstart §3. Integration `apps/k8s-reaper/tests/us2_reap.rs`.
+
+### Tests first
+
+- [ ] T040 [P] [US2] `decide.rs` tests:
+  - reap action list per case: plain, kustomize, Helm, Helm whose HelmRelease is kustomize-managed, HelmRelease already suspended, reconcile annotation already set (FR-013 to FR-015);
+  - `RateLimited` and `ReapCeilingReached` with deterministic ordering (FR-017);
+  - Flux toggle off on a Flux-managed workload → `ReportOnlyScope` (FR-027).
+- [ ] T041 [P] [US2] `executor.rs` tests with fake ports:
+  - step order (record + kustomize disable → HelmRelease hold → scale → mark reaped);
+  - resume after failure at each step without repeating a completed step (FR-016);
+  - `reaping` with replicas > 0 continues and is not taken as a restore.
+- [ ] T042 [P] [US2] Flux adapter contract tests in `crates/reaper-flux/tests/holds.rs`. Using a mock API, they check the HelmRelease merge patch body: `spec.suspend` only when not already suspended, the `held-for` set is sorted and deduplicated, `suspended-by-reaper`, and the reconcile annotation on a kustomize-managed HelmRelease.
+
+### Implementation
+
+- [ ] T043 [US2] Extend `decide()` with the `Reap` plan (remaining steps only), limits and the ceiling in `crates/reaper-core/src/decide.rs`
+- [ ] T044 [US2] Implement the executor's full path with per-step recording in `crates/reaper-core/src/executor.rs`
+- [ ] T045 [P] [US2] Implement the minimal HelmRelease v2 type and `ApiResource` in `crates/reaper-flux/src/helmrelease.rs`
+- [ ] T046 [US2] Implement HelmRelease hold/release patches in `crates/reaper-flux/src/holds.rs` (part of the `ClusterWriter` impl, composed in the app)
+- [ ] T047 [US2] Implement scale via the `scale` subresource and the kustomize reconcile annotation patch in `crates/reaper-kube/src/writer.rs`
+- [ ] T048 [US2] Write integration test `apps/k8s-reaper/tests/us2_reap.rs` (`#[ignore]`). It covers plain, kustomize and Helm fixtures; replicas stay 0 through three forced Flux reconciles (SC-002); `PartiallyAvailable` is untouched; and it verifies research R4's prune/force questions.
+
+**Checkpoint**: full mode works; restore is not done yet, so do not enable full mode outside dev.
+
+## Phase 5: User Story 3 — one-step restore (P2)
+
+**Goal**: one annotation, or a manual scale-up, returns the workload exactly to
+its pre-reap state.
+
+**Independent test**: quickstart §4. Integration `apps/k8s-reaper/tests/us3_restore.rs`.
+
+### Tests first
+
+- [ ] T050 [P] [US3] `decide.rs` and `executor.rs` tests:
+  - restore by annotation and by manual scale-up (keeps replicas);
+  - previous reconcile value restored vs. deleted (`<none>`);
+  - shared HelmRelease stays held until the last workload is restored;
+  - HelmRelease suspended by a person stays suspended;
+  - restore on an un-reaped workload → `RestoreIgnored`;
+  - restore runs in report mode and is not rate-limited (FR-018 to FR-020);
+  - a crash between restore steps converges;
+  - `mode=off` on a reaped workload restores first, then ignores it.
+- [ ] T051 [P] [US3] HelmRelease release contract test in `crates/reaper-flux/tests/holds.rs`: unsuspend only when `held-for` is empty and `suspended-by-reaper=true`; clean up `reaper.bruno.fyi/*` keys
+
+### Implementation
+
+- [ ] T052 [US3] Implement the `Restore` plan and the deleted/recreated-workload cleanup of `held-for` in `crates/reaper-core/src/decide.rs`
+- [ ] T053 [US3] Implement restore execution in `crates/reaper-core/src/executor.rs` and the release patch in `crates/reaper-flux/src/holds.rs`
+- [ ] T054 [US3] Trigger an immediate cycle on a `restore` annotation change, or a replicas change on a `reaped` workload, from the watch stream in `crates/reaper-kube/src/snapshot.rs` and `apps/k8s-reaper/src/main.rs`
+- [ ] T055 [US3] Write integration test `apps/k8s-reaper/tests/us3_restore.rs` (`#[ignore]`). It checks an exact pre-reap state diff after restore for each fixture (SC-003).
+
+**Checkpoint**: full mode is safe to enable.
+
+## Phase 6: User Story 4 — runtime control of mode and scope (P3)
+
+**Goal**: config changes take effect without a restart; labels can lower the
+mode; invalid config is refused safely.
+
+**Independent test**: integration `apps/k8s-reaper/tests/us4_config.rs`.
+
+### Tests first
+
+- [ ] T060 [P] [US4] `decide.rs` tests: effective mode = min(global, namespace, workload); a label can never raise it; an unknown label value is ignored and reported (FR-010)
+- [ ] T061 [P] [US4] Config watcher tests in `crates/reaper-kube/tests/config_watch.rs`: a new valid generation becomes active; an invalid one keeps the last valid config and sets `Valid=False`; deletion falls back to defaults (FR-026)
+
+### Implementation
+
+- [ ] T062 [US4] Implement the ReaperConfig watcher with last-valid-config retention and status/conditions/counts patching (FR-024) in `crates/reaper-kube/src/crd.rs` and `crates/reaper-kube/src/config_watch.rs`
+- [ ] T063 [US4] Emit `ConfigApplied`/`ConfigInvalid` Events and the `reaper_config_*` metrics from `apps/k8s-reaper/src/main.rs` wiring
+- [ ] T064 [US4] Write integration test `apps/k8s-reaper/tests/us4_config.rs` (`#[ignore]`): mode flip without restart, namespace `mode=report`, workload `mode=off`, invalid config, own namespace never touched (SC-005)
+
+## Phase 7: Polish and delivery
+
+- [ ] T070 [P] Write `CONTRIBUTING.md`:
+  - setup: toolchain, cargo-sweep, k3d, Flux CLI for dev;
+  - architecture (ports and adapters diagram) and decision log (link research.md);
+  - testing tiers, `make` targets, release process;
+  - signed commits.
+- [ ] T071 [P] Write `docs/guides/getting-started.md` (install via Flux HelmRelease, stay in report mode, read the reports, flip to full)
+- [ ] T072 [P] Write `docs/guides/restoring-a-workload.md`: the one restore command, manual scale-up, "restore then fix" with Flux, shared HelmReleases
+- [ ] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field, opt-out labels, examples for `slam-*`
+- [ ] T074 Measure memory and cycle time against the plan's goals (< 64 MiB, < 1 s for 300 pods) with a synthetic snapshot benchmark in `crates/reaper-core/benches/decide.rs`
+- [ ] T075 Run quickstart.md end to end on k3d and tick SC-001 to SC-005, SC-007
+- [ ] T076 Chart PR in `mbround18/helm-charts` (`charts/k8s-reaper`): CRD from `k8s-reaper crd`, Deployment (Recreate, 1 replica, non-root, read-only fs), RBAC per contracts/config.md, Service, ServiceMonitor, PrometheusRule per contracts/metrics.md, `ReaperConfig/default` from values (`mode: report`). (Outside this repo.)
+- [ ] T077 Fluxified overlay `overlays/services/k8s-reaper/` (namespace, HelmRelease → `charts/k8s-reaper`), then `uv run invoke build test`; deploy in report mode and check SC-006. (Outside this repo, after T076 is merged to the chart repo's `main`.)
+
+## Dependencies
+
+- Phase 1 → Phase 2 → US1.
+- US2 needs US1 (detection and the report path). US3 needs US2 (something to
+  restore). US4 needs only Phase 2 and US1; it can run in parallel with
+  US2/US3.
+- Full mode must not be enabled anywhere but dev until US3 is done.
+- T076 → T077. Both come after US3, so the deployed build can be switched to
+  full mode safely later.
+
+## Parallel examples
+
+- Phase 2: T012, T014, T015, T016, T017, T018 together after T011.
+- US1 tests: T020, T021, T022, T023, T024 together; then T030 and T031 alongside
+  T025–T029.
+- US2: T040, T041, T042 together; T045 alongside T043.
+- US4 (T060 to T064) alongside US2/US3 by another contributor.
+- Docs T070 to T073 any time after US3.
+
+## Implementation strategy
+
+1. **MVP = Phases 1–3**: ship to roanoke in report mode (T076–T077 can follow
+   US1 if the chart pins `mode: report`). It answers "what is crash-looping and
+   for how long" right away.
+2. Add US2 and US3 together before anyone sets `mode: full`.
+3. US4 hardens runtime control. Then flip `mode: full`, possibly starting with
+   `includeNamespaces: [fathom-dev]`, once the owner questions in spec.md are
+   answered.
