@@ -43,6 +43,7 @@ pub struct Config {
     pub scope: Scope,
     pub limits: Limits,
     pub flux: FluxToggles,
+    pub cron_jobs: CronJobs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,13 @@ pub struct Limits {
 pub struct FluxToggles {
     pub kustomize: bool,
     pub helm_release: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CronJobs {
+    pub enabled: bool,
+    pub failing_duration: Duration,
+    pub min_failed_runs: u32,
 }
 
 impl Default for Config {
@@ -99,6 +107,11 @@ impl Default for Config {
                 kustomize: true,
                 helm_release: true,
             },
+            cron_jobs: CronJobs {
+                enabled: true,
+                failing_duration: Duration::from_hours(6),
+                min_failed_runs: 3,
+            },
         }
     }
 }
@@ -123,6 +136,9 @@ pub struct RawConfig {
     pub max_reaped: Option<i64>,
     pub flux_kustomize: Option<bool>,
     pub flux_helm_release: Option<bool>,
+    pub cron_jobs_enabled: Option<bool>,
+    pub cron_jobs_failing_duration: Option<String>,
+    pub cron_jobs_min_failed_runs: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,29 +195,18 @@ impl Config {
             (MINUTE, DAY),
             &mut c.detection.recovery_window,
         );
-        for (field, value, target) in [
-            (
-                "spec.scope.excludeNamespaces",
-                &raw.exclude_namespaces,
-                &mut c.scope.exclude_namespaces,
-            ),
-            (
-                "spec.scope.includeNamespaces",
-                &raw.include_namespaces,
-                &mut c.scope.include_namespaces,
-            ),
-        ] {
-            if let Some(list) = value {
-                if list.iter().any(String::is_empty) {
-                    errors.push(FieldError {
-                        field,
-                        message: "entries must not be empty".into(),
-                    });
-                } else {
-                    target.clone_from(list);
-                }
-            }
-        }
+        list_field(
+            &mut errors,
+            "spec.scope.excludeNamespaces",
+            raw.exclude_namespaces.as_ref(),
+            &mut c.scope.exclude_namespaces,
+        );
+        list_field(
+            &mut errors,
+            "spec.scope.includeNamespaces",
+            raw.include_namespaces.as_ref(),
+            &mut c.scope.include_namespaces,
+        );
         int_field(
             &mut errors,
             "spec.limits.maxReapsPerCycle",
@@ -222,6 +227,23 @@ impl Config {
         if let Some(v) = raw.flux_helm_release {
             c.flux.helm_release = v;
         }
+        if let Some(v) = raw.cron_jobs_enabled {
+            c.cron_jobs.enabled = v;
+        }
+        duration_field(
+            &mut errors,
+            "spec.cronJobs.failingDuration",
+            raw.cron_jobs_failing_duration.as_deref(),
+            (10 * MINUTE, 7 * DAY),
+            &mut c.cron_jobs.failing_duration,
+        );
+        int_field(
+            &mut errors,
+            "spec.cronJobs.minFailedRuns",
+            raw.cron_jobs_min_failed_runs,
+            (1, 1000),
+            &mut c.cron_jobs.min_failed_runs,
+        );
 
         if errors.is_empty() {
             Ok(c)
@@ -245,6 +267,9 @@ impl Config {
             max_reaped: Some(self.limits.max_reaped.into()),
             flux_kustomize: Some(self.flux.kustomize),
             flux_helm_release: Some(self.flux.helm_release),
+            cron_jobs_enabled: Some(self.cron_jobs.enabled),
+            cron_jobs_failing_duration: Some(format_duration(self.cron_jobs.failing_duration)),
+            cron_jobs_min_failed_runs: Some(self.cron_jobs.min_failed_runs.into()),
         }
     }
 }
@@ -257,6 +282,23 @@ pub fn parse_mode_override(value: &str) -> Option<Mode> {
         "off" => Some(Mode::Off),
         "report" => Some(Mode::Report),
         _ => None,
+    }
+}
+
+fn list_field(
+    errors: &mut Vec<FieldError>,
+    field: &'static str,
+    value: Option<&Vec<String>>,
+    target: &mut Vec<String>,
+) {
+    let Some(list) = value else { return };
+    if list.iter().any(String::is_empty) {
+        errors.push(FieldError {
+            field,
+            message: "entries must not be empty".into(),
+        });
+    } else {
+        target.clone_from(list);
     }
 }
 
@@ -355,6 +397,7 @@ mod tests {
             max_reaped: Some(500),
             flux_kustomize: Some(false),
             flux_helm_release: Some(false),
+            ..RawConfig::default()
         };
         let c = Config::from_raw(&raw).unwrap();
         assert_eq!(c.mode, Mode::Full);
@@ -399,6 +442,43 @@ mod tests {
             ]
         );
         assert!(err.to_string().contains("spec.mode"));
+    }
+
+    #[test]
+    fn cronjob_settings() {
+        let c = Config::default();
+        assert!(c.cron_jobs.enabled);
+        assert_eq!(c.cron_jobs.failing_duration, Duration::from_hours(6));
+        assert_eq!(c.cron_jobs.min_failed_runs, 3);
+        let raw = RawConfig {
+            cron_jobs_enabled: Some(false),
+            cron_jobs_failing_duration: Some("10m".into()),
+            cron_jobs_min_failed_runs: Some(1000),
+            ..RawConfig::default()
+        };
+        let c = Config::from_raw(&raw).unwrap();
+        assert!(!c.cron_jobs.enabled);
+        assert_eq!(c.cron_jobs.failing_duration, Duration::from_mins(10));
+        assert_eq!(c.cron_jobs.min_failed_runs, 1000);
+        assert_eq!(Config::from_raw(&c.to_raw()).unwrap(), c);
+        let raw = RawConfig {
+            cron_jobs_failing_duration: Some("9m".into()),
+            cron_jobs_min_failed_runs: Some(0),
+            ..RawConfig::default()
+        };
+        let fields: Vec<_> = Config::from_raw(&raw)
+            .unwrap_err()
+            .errors
+            .iter()
+            .map(|e| e.field)
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "spec.cronJobs.failingDuration",
+                "spec.cronJobs.minFailedRuns"
+            ]
+        );
     }
 
     #[test]
