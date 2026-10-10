@@ -37,5 +37,5 @@
   layout and exporters are left to the plan.
 - No inline `[NEEDS CLARIFICATION]` markers: the three owner-level choices
   (API prefix, partially available workloads, tenant namespaces) are listed
-  under "Open Questions for the Owner" with a default the plan proceeds on.
+  under "Owner Decisions"; all were answered on 2026-10-10.
 - Iteration 1: all items pass.

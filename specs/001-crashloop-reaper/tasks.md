@@ -198,5 +198,5 @@ mode; invalid config is refused safely.
    for how long" right away.
 2. Add US2 and US3 together before anyone sets `mode: full`.
 3. US4 hardens runtime control. Then flip `mode: full`, possibly starting with
-   `includeNamespaces: [fathom-dev]`, once the owner questions in spec.md are
+   `includeNamespaces: [fathom-dev]`. The owner questions in spec.md are
    answered.

@@ -218,9 +218,8 @@ deploy/dev/                   # k3d config + sample crash-looping Deployments (d
      it.
 3. **Rollout**:
    1. Report mode for at least a week. Compare reports against SC-006.
-   2. Answer the open questions.
-   3. Flip `spec.mode: full` in Git.
-   4. Optionally start with `includeNamespaces: [fathom-dev]`.
+   2. Flip `spec.mode: full` in Git.
+   3. Optionally start with `includeNamespaces: [fathom-dev]`.
 
 ## Delivery order (each a signed commit)
 

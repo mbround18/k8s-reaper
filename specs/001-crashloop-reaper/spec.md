@@ -430,16 +430,15 @@ reported but never acted on, even in full mode.
   fix pushed to Git does not reach it. The user guide says: restore, then let
   Flux apply the fix (or restore after pushing it).
 - **Tenant namespaces** (`slam-*`) are in scope like any other namespace,
-  because they are the motivating case (see Question 3).
+  because they are the motivating case (Question 3, answered).
 - **Delivery**: Helm chart in `mbround18/helm-charts` (`charts/k8s-reaper`),
   installed by a HelmRelease in `fluxified`. Neither is built in this feature.
 
-## Open Questions for the Owner
+## Owner Decisions
 
-Question 1 is answered; Questions 2 and 3 are still open. Each has a default
-(above) that the plan uses until answered.
+All three open questions were answered on 2026-10-10.
 
-### Question 1: API group and annotation prefix — answered
+### Question 1: API group and annotation prefix
 
 **Answer** (2026-10-10): `reaper.boop.ninja`. Every annotation, label, Event
 reporter and the CRD group use this prefix. Changing it after release is a
@@ -447,24 +446,13 @@ breaking change.
 
 ### Question 2: Act on partially available workloads?
 
-**Context**: FR-007 never scales a workload that still has an available
-replica. A bad rollout can leave new pods crash-looping forever while old pods
-keep serving. The reaper reports that but leaves it alone.
-
-| Option | Answer                                                 | Implications                                                                     |
-| ------ | ------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| A      | Never act; report only (default)                       | No reaper-caused outage; stuck rollouts still restart every 5 minutes            |
-| B      | As A, plus a distinct "stuck rollout" Event and alert  | Same safety, clearer signal; small extra scope                                   |
-| C      | Allow acting on partial workloads per-namespace opt-in | Stops the waste, but scaling to 0 also kills the healthy pods: a real outage     |
+**Answer** (2026-10-10): A, never act. A workload with an available replica is
+reported but never scaled (FR-007). A stuck rollout keeps restarting, but the
+reaper never causes an outage.
 
 ### Question 3: Tenant namespaces in full mode
 
-**Context**: The `slam-*` namespaces belong to a tenant that deploys from its
-own repository. The reaper scaling the tenant's Deployments to zero is a change
-to another team's workloads.
+**Answer** (2026-10-10): A, treat them like any namespace. Once full mode is on,
+the `slam-*` crash-loopers are reaped. The tenant can still opt out with the
+`reaper.boop.ninja/mode` namespace label.
 
-| Option | Answer                                                        | Implications                                     |
-| ------ | ------------------------------------------------------------- | ------------------------------------------------ |
-| A      | Treat like any namespace (default)                            | Stops the six crash-loopers once full mode is on |
-| B      | Report-only for `slam-*` (namespace label `mode=report`)      | Tenant is alerted, nothing changed for them      |
-| C      | Act, and also notify the tenant through their own alert route | Needs a tenant-facing Alertmanager route         |
