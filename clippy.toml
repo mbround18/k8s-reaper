@@ -1,1 +1,1 @@
-doc-valid-idents = ["HelmRelease", "HelmReleases", "ReaperConfig", "ReplicaSet", "ReplicaSets", "StatefulSet", "StatefulSets", "DaemonSet", "DaemonSets", "ScaledObject", "CrashLoopBackOff", "ImagePullBackOff", "OOMKilled", "OpenTelemetry", "..", "KEDA"]
+doc-valid-idents = ["HelmRelease", "HelmReleases", "ReaperConfig", "ReplicaSet", "ReplicaSets", "StatefulSet", "StatefulSets", "DaemonSet", "DaemonSets", "ScaledObject", "CrashLoopBackOff", "ImagePullBackOff", "OOMKilled", "OpenTelemetry", "..", "KEDA", "CronJob", "CronJobs"]

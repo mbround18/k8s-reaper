@@ -14,6 +14,7 @@ pub enum WorkloadKind {
     Deployment,
     StatefulSet,
     DaemonSet,
+    CronJob,
 }
 
 impl WorkloadKind {
@@ -23,6 +24,7 @@ impl WorkloadKind {
             WorkloadKind::Deployment => "Deployment",
             WorkloadKind::StatefulSet => "StatefulSet",
             WorkloadKind::DaemonSet => "DaemonSet",
+            WorkloadKind::CronJob => "CronJob",
         }
     }
 }
@@ -34,6 +36,7 @@ impl FromStr for WorkloadKind {
             "Deployment" => Ok(WorkloadKind::Deployment),
             "StatefulSet" => Ok(WorkloadKind::StatefulSet),
             "DaemonSet" => Ok(WorkloadKind::DaemonSet),
+            "CronJob" => Ok(WorkloadKind::CronJob),
             _ => Err(ParseRefError(s.to_owned())),
         }
     }
@@ -95,6 +98,7 @@ impl WorkloadRef {
                 WorkloadKind::Deployment => ObjectKind::Deployment,
                 WorkloadKind::StatefulSet => ObjectKind::StatefulSet,
                 WorkloadKind::DaemonSet => ObjectKind::DaemonSet,
+                WorkloadKind::CronJob => ObjectKind::CronJob,
             },
             namespace: Some(self.namespace.clone()),
             name: self.name.clone(),
@@ -132,6 +136,7 @@ pub enum ObjectKind {
     Deployment,
     StatefulSet,
     DaemonSet,
+    CronJob,
     HelmRelease,
     Pod,
     Namespace,
@@ -145,6 +150,7 @@ impl ObjectKind {
             ObjectKind::Deployment => "Deployment",
             ObjectKind::StatefulSet => "StatefulSet",
             ObjectKind::DaemonSet => "DaemonSet",
+            ObjectKind::CronJob => "CronJob",
             ObjectKind::HelmRelease => "HelmRelease",
             ObjectKind::Pod => "Pod",
             ObjectKind::Namespace => "Namespace",
@@ -194,6 +200,7 @@ impl<'de> Deserialize<'de> for ObjectRef {
                 ObjectKind::Deployment,
                 ObjectKind::StatefulSet,
                 ObjectKind::DaemonSet,
+                ObjectKind::CronJob,
                 ObjectKind::HelmRelease,
                 ObjectKind::Pod,
                 ObjectKind::Namespace,
@@ -351,6 +358,8 @@ mod tests {
         assert_eq!(w, WorkloadRef::new(WorkloadKind::Deployment, "app", "web"));
         assert_eq!(w.to_string(), "Deployment/app/web");
         assert!("Job/app/web".parse::<WorkloadRef>().is_err());
+        let c: WorkloadRef = "CronJob/app/nightly".parse().unwrap();
+        assert_eq!(c.object_ref().to_string(), "CronJob/app/nightly");
         assert!("Deployment//web".parse::<WorkloadRef>().is_err());
         assert_eq!("ns/hr".parse::<NsName>().unwrap().to_string(), "ns/hr");
         assert!("ns/hr/x".parse::<NsName>().is_err());

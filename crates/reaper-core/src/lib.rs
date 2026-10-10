@@ -6,7 +6,10 @@
 pub mod config;
 pub mod glob;
 pub mod model;
+pub mod plan;
+pub mod ports;
 pub mod record;
+pub mod testing;
 pub mod time;
 
 pub use time::Timestamp;
