@@ -18,6 +18,7 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
-        Command::Run | Command::Crd => {}
+        Command::Run => {}
+        Command::Crd => print!("{}", reaper_kube::crd::crd_yaml()),
     }
 }

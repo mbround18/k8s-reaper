@@ -31,7 +31,7 @@ parallel (different files, no unfinished dependency).
 - [X] T013 Write tests first, then implement the annotation codec in `crates/reaper-core/src/record.rs`. It encodes and decodes every key in contracts/annotations.md, round-trips, and rejects malformed values without panicking.
 - [X] T014 [P] Define `Plan`, `Action`, `SkipReason`, `Transition`, `CyclePlan`, with stable JSON serialisation (snapshot tests via `insta`), in `crates/reaper-core/src/plan.rs`
 - [X] T015 [P] Define ports `ClusterWriter`, `EventSink` and `Telemetry` (native `async fn`, no runtime) in `crates/reaper-core/src/ports.rs`, with in-memory fakes in `crates/reaper-core/src/testing.rs`
-- [ ] T016 [P] Define the `ReaperConfig` CustomResource (spec/status per contracts/config.md, `schemars` ranges and enums) and its conversion to `reaper_core::Config` in `crates/reaper-kube/src/crd.rs`. Wire `k8s-reaper crd` to print the YAML. Add a golden-file test `crates/reaper-kube/tests/crd_golden.rs`.
+- [X] T016 [P] Define the `ReaperConfig` CustomResource (spec/status per contracts/config.md, `schemars` ranges and enums) and its conversion to `reaper_core::Config` in `crates/reaper-kube/src/crd.rs`. Wire `k8s-reaper crd` to print the YAML. Add a golden-file test `crates/reaper-kube/tests/crd_golden.rs`.
 - [ ] T017 [P] Set up tracing in `crates/reaper-observability/src/tracing.rs`: JSON/text logs, OTLP traces when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 - [ ] T018 [P] Add the Axum server in `crates/reaper-observability/src/http.rs` with `/healthz`, `/readyz` (readiness flag from a shared handle) and `/metrics`; add a unit test using `tower::ServiceExt::oneshot`
 
