@@ -1,7 +1,9 @@
 # Contract: annotations
 
 Prefix `reaper.boop.ninja/` (Question 1, answered). The reaper owns every key under
-it; people may set only `restore` and `mode`. Changing a key or its format is a
+it except the person-set keys: `restore`, `mode` and the four threshold
+overrides. The reaper deletes `restore` once it has acted on it, and never
+touches the others. Changing a key or its format is a
 breaking change.
 
 ## On Deployments, StatefulSets, DaemonSets, CronJobs
@@ -17,6 +19,10 @@ breaking change.
 | `reaper.boop.ninja/helmrelease`       | reaper | reap step 2, only if Helm-managed   | `<namespace>/<name>` of the held HelmRelease                                                            |
 | `reaper.boop.ninja/reaped-at`         | reaper | reap step 4                         | RFC 3339 UTC                                                                                            |
 | `reaper.boop.ninja/restore`           | person | any time                            | Any non-empty value. On a `reaped`/`reaping` workload this triggers a restore; otherwise it is removed with `RestoreIgnored` |
+| `reaper.boop.ninja/crashloop-duration` | person | any time                          | Duration (`2h`); raises `detection.crashLoopDuration` for this workload, never lowers it (FR-034) |
+| `reaper.boop.ninja/min-restarts`      | person | any time                            | Integer; raises `detection.minRestarts` for this workload                                               |
+| `reaper.boop.ninja/failing-duration`  | person | any time (CronJob)                  | Duration; raises `cronJobs.failingDuration` for this CronJob                                            |
+| `reaper.boop.ninja/min-failed-runs`   | person | any time (CronJob)                  | Integer; raises `cronJobs.minFailedRuns` for this CronJob                                               |
 | `reaper.boop.ninja/mode`              | person | any time                            | `off` or `report` (same meaning as the label, see labels.md); the label wins if both are present and differ, then the most restrictive applies |
 
 CronJob-only keys (US5). On a CronJob, `crashloop-since`, `healthy-since` and

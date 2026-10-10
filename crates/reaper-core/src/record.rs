@@ -27,16 +27,35 @@ pub const REAPED_AT: &str = "reaper.boop.ninja/reaped-at";
 pub const RESTORE: &str = "reaper.boop.ninja/restore";
 pub const HELD_FOR: &str = "reaper.boop.ninja/held-for";
 pub const SUSPENDED_BY_REAPER: &str = "reaper.boop.ninja/suspended-by-reaper";
+pub const FAILING_SINCE: &str = "reaper.boop.ninja/failing-since";
+pub const FAILED_RUNS: &str = "reaper.boop.ninja/failed-runs";
+pub const LAST_FAILED_JOB: &str = "reaper.boop.ninja/last-failed-job";
+
+// Person-set threshold overrides (FR-034). Never written or deleted by the reaper.
+pub const CRASHLOOP_DURATION: &str = "reaper.boop.ninja/crashloop-duration";
+pub const MIN_RESTARTS: &str = "reaper.boop.ninja/min-restarts";
+pub const FAILING_DURATION: &str = "reaper.boop.ninja/failing-duration";
+pub const MIN_FAILED_RUNS: &str = "reaper.boop.ninja/min-failed-runs";
+
+/// Keys under the prefix that belong to people (`restore` is person-set but
+/// the reaper removes it once handled, so it is not listed here).
+pub const PERSON_KEYS: [&str; 5] = [
+    MODE_KEY,
+    CRASHLOOP_DURATION,
+    MIN_RESTARTS,
+    FAILING_DURATION,
+    MIN_FAILED_RUNS,
+];
 
 pub const FLUX_RECONCILE: &str = "kustomize.toolkit.fluxcd.io/reconcile";
 pub const FLUX_RECONCILE_DISABLED: &str = "disabled";
 const NONE_LITERAL: &str = "<none>";
 
-/// True for keys the reaper owns and may delete. `mode` is under the prefix
-/// but belongs to people.
+/// True for keys the reaper owns and may delete. `mode` and the threshold
+/// overrides are under the prefix but belong to people.
 #[must_use]
 pub fn is_owned_key(key: &str) -> bool {
-    key.starts_with(PREFIX) && key != MODE_KEY
+    key.starts_with(PREFIX) && !PERSON_KEYS.contains(&key)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -483,6 +502,22 @@ mod tests {
         assert_eq!(errors.len(), 2);
         let (_, errors) = HelmReleaseHold::decode(&map(&[(HELD_FOR, "not json")]));
         assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn person_set_keys_are_not_owned() {
+        for key in [
+            MODE_KEY,
+            CRASHLOOP_DURATION,
+            MIN_RESTARTS,
+            FAILING_DURATION,
+            MIN_FAILED_RUNS,
+        ] {
+            assert!(!is_owned_key(key), "{key}");
+        }
+        assert!(is_owned_key(RESTORE));
+        assert!(is_owned_key(PLAN));
+        assert!(!is_owned_key("example.com/other"));
     }
 
     #[test]

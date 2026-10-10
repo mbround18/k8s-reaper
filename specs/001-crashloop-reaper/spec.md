@@ -198,6 +198,11 @@ reported but never acted on, even in full mode.
    on the configuration object's status and as an Event and metric.
 5. **Given** no configuration object at all, **When** the reaper starts,
    **Then** it runs in report mode with the documented defaults.
+6. **Given** a workload annotated `reaper.boop.ninja/crashloop-duration: 2h`
+   (or `min-restarts`, `failing-duration`, `min-failed-runs`), **When** its
+   thresholds are evaluated, **Then** the stricter of the annotation and the
+   global value applies. An override can make the reaper more patient with
+   that workload, never quicker. An invalid value is ignored and reported.
 
 ### User Story 5 - Pause a CronJob that keeps failing (Priority: P3)
 
@@ -416,6 +421,13 @@ after about 10 minutes and nothing changes. In full mode it gets
 - **FR-026**: With no configuration object present, the reaper MUST run with the
   documented defaults (report mode). An invalid object MUST NOT replace the last
   valid configuration.
+- **FR-034**: A workload MAY carry person-set threshold overrides as
+  annotations: `reaper.boop.ninja/crashloop-duration` and `min-restarts` (pod
+  workloads), `failing-duration` and `min-failed-runs` (CronJobs). The
+  effective threshold MUST be the larger of the override and the global value.
+  Values outside the global validation range, or unparseable, MUST be ignored
+  and reported like an invalid mode label. The reaper never writes or deletes
+  these keys.
 - **FR-027**: Flux integration MUST be switchable at runtime: the kustomize
   and HelmRelease steps are separately enabled (default both on). When a needed
   step is disabled, a Flux-managed workload is report-only (`ReportOnlyScope`),
@@ -570,3 +582,10 @@ The details below were filled in by default, and the owner can change them:
 - Paused CronJobs share the reap limits with Deployments and StatefulSets.
 - The state label, plan annotation, Flux holds and restore action are the same
   as for Deployments.
+
+### Question 5: More configuration options
+
+**Answer** (2026-10-10): "we could add some configuration options". This was
+taken to mean per-workload threshold overrides (FR-034, US4 scenario 6). They
+are annotations a team sets on its own workload, and they can only raise
+thresholds. Global settings stay in `ReaperConfig`.

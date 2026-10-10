@@ -149,11 +149,13 @@ mode; invalid config is refused safely.
 ### Tests first
 
 - [ ] T060 [P] [US4] `decide.rs` tests: effective mode = min(global, namespace, workload); a label can never raise it; an unknown label value is ignored and reported (FR-010)
+- [ ] T065 [P] [US4] `decide.rs` tests for threshold overrides (FR-034): the larger of override and global applies; a lower override is ignored; out-of-range or unparseable values are ignored and reported once
 - [ ] T061 [P] [US4] Config watcher tests in `crates/reaper-kube/tests/config_watch.rs`: a new valid generation becomes active; an invalid one keeps the last valid config and sets `Valid=False`; deletion falls back to defaults (FR-026)
 
 ### Implementation
 
 - [ ] T062 [US4] Implement the ReaperConfig watcher with last-valid-config retention and status/conditions/counts patching (FR-024) in `crates/reaper-kube/src/crd.rs` and `crates/reaper-kube/src/config_watch.rs`
+- [ ] T066 [US4] Implement threshold overrides in `crates/reaper-core/src/decide.rs` (read from the workload's person-set annotations, carried in `WorkloadView`)
 - [ ] T063 [US4] Emit `ConfigApplied`/`ConfigInvalid` Events and the `reaper_config_*` metrics from `apps/k8s-reaper/src/main.rs` wiring
 - [ ] T064 [US4] Write integration test `apps/k8s-reaper/tests/us4_config.rs` (`#[ignore]`): mode flip without restart, namespace `mode=report`, workload `mode=off`, invalid config, own namespace never touched (SC-005)
 
