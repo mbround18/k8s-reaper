@@ -21,7 +21,7 @@ The reaper is a single-replica Rust operator.
    - a reference-counted `spec.suspend` on HelmReleases.
 4. All state lives in annotations on the objects it touched, written in an
    order that makes every step idempotent and every reap reversible by one
-   annotation (`reaper.bruno.fyi/restore`).
+   annotation (`reaper.boop.ninja/restore`).
 5. Configuration is a cluster-scoped `ReaperConfig` CR. Telemetry goes out over
    OpenTelemetry plus a Prometheus `/metrics` endpoint, which existing
    Alertmanager → Discord routing picks up.
@@ -127,7 +127,7 @@ specs/001-crashloop-reaper/
 ├── spec.md  plan.md  research.md  data-model.md  quickstart.md  tasks.md
 ├── checklists/requirements.md
 └── contracts/
-    ├── annotations.md   # reaper.bruno.fyi/* and Flux annotations it writes
+    ├── annotations.md   # reaper.boop.ninja/* and Flux annotations it writes
     ├── labels.md        # state + mode labels
     ├── config.md        # ReaperConfig CRD + process flags/env
     ├── events.md        # Event reasons and when they fire

@@ -89,11 +89,11 @@ Mode = Off < Report < Full        # effective = min(global, namespace, workload)
 ```
 
 `Plan` serialises to a stable JSON form (sorted keys, no timestamps other than
-those in the inputs). The `reaper.bruno.fyi/plan` annotation is that JSON. The
+those in the inputs). The `reaper.boop.ninja/plan` annotation is that JSON. The
 executor in report mode publishes it; in full mode it publishes it and then
 executes it. SC-004 compares the two byte for byte.
 
-## Workload lifecycle (state label `reaper.bruno.fyi/state`)
+## Workload lifecycle (state label `reaper.boop.ninja/state`)
 
 ```text
             crash-looping seen

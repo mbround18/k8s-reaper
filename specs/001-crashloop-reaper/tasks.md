@@ -54,7 +54,7 @@ and a `plan` annotation. No replicas or Flux object changes.
   - flapping does not reset `crashloop-since`; recovery only after `recoveryWindow` (FR-003);
   - DaemonSet → `CannotScaleToZero`; `PartiallyAvailable`; `ManagedByController`; `ManagedByAutoscaler` (KEDA);
   - excluded namespace, own namespace, `includeNamespaces` globs → nothing.
-- [ ] T022 [P] [US1] Dry-run-equivalence harness in `crates/reaper-core/tests/equivalence.rs` (SC-004). For every fixture in the decide tests, it runs the executor with fake ports in `Report` and `Full` and asserts identical published plan JSON. In `Report`, the fake `ClusterWriter` must receive only `reaper.bruno.fyi/*` annotation/label writes (FR-012).
+- [ ] T022 [P] [US1] Dry-run-equivalence harness in `crates/reaper-core/tests/equivalence.rs` (SC-004). For every fixture in the decide tests, it runs the executor with fake ports in `Report` and `Full` and asserts identical published plan JSON. In `Report`, the fake `ClusterWriter` must receive only `reaper.boop.ninja/*` annotation/label writes (FR-012).
 - [ ] T023 [P] [US1] Snapshot-mapping contract tests in `crates/reaper-kube/tests/snapshot.rs`. They use JSON fixtures in `crates/reaper-kube/tests/fixtures/` taken from scrubbed live shapes (slam-prod Deployment/ReplicaSet/Pod, fathom-dev crashloop, Job pod, ImagePullBackOff pod).
 - [ ] T024 [P] [US1] Writer contract test in `crates/reaper-kube/tests/writer.rs` using a `tower-test` mock. Annotation/label merge patches carry a `resourceVersion` precondition and field manager `k8s-reaper`.
 
@@ -69,7 +69,7 @@ and a `plan` annotation. No replicas or Flux object changes.
   - HelmReleases via the Flux adapter type;
   - mode labels/annotations read from namespaces and workloads.
 - [ ] T029 [US1] Implement `ClusterWriter` for annotation and label patches in `crates/reaper-kube/src/writer.rs`
-- [ ] T030 [P] [US1] Implement `EventSink` over the `events.k8s.io/v1` Recorder (reporting controller `reaper.bruno.fyi/k8s-reaper`) in `crates/reaper-kube/src/events.rs`
+- [ ] T030 [P] [US1] Implement `EventSink` over the `events.k8s.io/v1` Recorder (reporting controller `reaper.boop.ninja/k8s-reaper`) in `crates/reaper-kube/src/events.rs`
 - [ ] T031 [P] [US1] Implement `Telemetry` in `crates/reaper-observability/src/telemetry.rs`: every metric in contracts/metrics.md via `prometheus-client`, mirrored to OTel meters, with stale series removed when a state clears. Add a test that the exposition contains exactly the contracted names and labels.
 - [ ] T032 [US1] Wire `run` in `apps/k8s-reaper/src/main.rs`:
   - clap flags/env per contracts/config.md;
@@ -128,7 +128,7 @@ its pre-reap state.
   - restore runs in report mode and is not rate-limited (FR-018 to FR-020);
   - a crash between restore steps converges;
   - `mode=off` on a reaped workload restores first, then ignores it.
-- [ ] T051 [P] [US3] HelmRelease release contract test in `crates/reaper-flux/tests/holds.rs`: unsuspend only when `held-for` is empty and `suspended-by-reaper=true`; clean up `reaper.bruno.fyi/*` keys
+- [ ] T051 [P] [US3] HelmRelease release contract test in `crates/reaper-flux/tests/holds.rs`: unsuspend only when `held-for` is empty and `suspended-by-reaper=true`; clean up `reaper.boop.ninja/*` keys
 
 ### Implementation
 

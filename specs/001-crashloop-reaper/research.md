@@ -26,7 +26,7 @@ checked read-only on 2026-10-10.
   ReplicaSets, Deployments, StatefulSets, DaemonSets, Namespaces, HPAs,
   HelmReleases and the `ReaperConfig`. Every `cycleInterval` (default 60 s),
   take a snapshot, run the pure core `decide(snapshot, config, now)`, and
-  execute the resulting plan. A change to a `reaper.bruno.fyi/restore`
+  execute the resulting plan. A change to a `reaper.boop.ninja/restore`
   annotation, or to replicas on a reaped workload, triggers an immediate cycle.
 - **Rationale**: Rate limiting, the reaped ceiling and deterministic ordering
   (FR-017) are properties of the **whole** cycle, not of one object. A
@@ -47,8 +47,8 @@ checked read-only on 2026-10-10.
     "Error" phase between restarts (`fathom-dev/crashloop` shows `Error` in
     `kubectl get pods`).
   - The workload's crashloop start is persisted as annotation
-    `reaper.bruno.fyi/crashloop-since` on the workload. Its first healthy
-    observation is persisted as `reaper.bruno.fyi/healthy-since`. State is
+    `reaper.boop.ninja/crashloop-since` on the workload. Its first healthy
+    observation is persisted as `reaper.boop.ninja/healthy-since`. State is
     cleared only when `now - healthy-since >= recoveryWindow`.
 - **Rationale**: Kubernetes does not record when CrashLoopBackOff began, and pod
   conditions flap with each restart. Restart count alone does not give a
@@ -84,11 +84,11 @@ checked read-only on 2026-10-10.
   `helm.toolkit.fluxcd.io/namespace` labels are present, merge-patch the
   HelmRelease (`helm.toolkit.fluxcd.io/v2`):
   - set `spec.suspend: true`, but only if it is not already true;
-  - add the workload to annotation `reaper.bruno.fyi/held-for`;
-  - set `reaper.bruno.fyi/suspended-by-reaper`;
+  - add the workload to annotation `reaper.boop.ninja/held-for`;
+  - set `reaper.boop.ninja/suspended-by-reaper`;
   - and if the HelmRelease itself has kustomize labels, set the reconcile
     annotation as in R4 and record its previous value in
-    `reaper.bruno.fyi/previous-reconcile`.
+    `reaper.boop.ninja/previous-reconcile`.
 
   All of this is one patch, made before the scale.
 - **Rationale**:
@@ -118,7 +118,7 @@ checked read-only on 2026-10-10.
      `reaping`, and (if kustomize-managed) the reconcile annotation plus
      `previous-reconcile`.
   2. If Helm-managed, place the HelmRelease hold (R5) and set
-     `reaper.bruno.fyi/helmrelease` on the workload.
+     `reaper.boop.ninja/helmrelease` on the workload.
   3. Scale to 0 through the `scale` subresource.
   4. Set `reaped-at` and state label `reaped`; emit `Reaped`.
 
@@ -128,7 +128,7 @@ checked read-only on 2026-10-10.
      annotation back.
   2. Scale to `original-replicas` (skipped for a manual scale-up).
   3. In one patch, put the workload's reconcile annotation back (delete it if
-     the recorded previous value was none) and remove every `reaper.bruno.fyi/*`
+     the recorded previous value was none) and remove every `reaper.boop.ninja/*`
      annotation and label. Emit `Restored`.
 - **Rationale**: Flux is blocked before replicas change, and replicas come back
   before Flux is re-enabled. A crash between restore steps 2 and 3 leaves a
@@ -153,7 +153,7 @@ checked read-only on 2026-10-10.
 
 ## R8 — Configuration: a cluster-scoped CRD
 
-- **Decision**: CRD `ReaperConfig` (`reaper.bruno.fyi/v1alpha1`, cluster-scoped),
+- **Decision**: CRD `ReaperConfig` (`reaper.boop.ninja/v1alpha1`, cluster-scoped),
   watched by name (`default`). The spec holds behaviour; the status holds the
   summary required by FR-024. Process concerns (bind address, log format, OTLP
   endpoint, own namespace) are flags/env. The CRD YAML is generated from the
@@ -192,7 +192,7 @@ checked read-only on 2026-10-10.
 
 - **Decision**:
   - Use `events.k8s.io/v1` through `kube::runtime::events::Recorder`, with
-    reporting controller `reaper.bruno.fyi/k8s-reaper`.
+    reporting controller `reaper.boop.ninja/k8s-reaper`.
   - Emit on state **transitions** and on a change of skip reason, not every
     cycle.
 - **Rationale**: Events stay readable and the API server is not spammed. The

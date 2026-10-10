@@ -31,7 +31,7 @@ make dev-run         # run the reaper in-cluster in namespace k8s-reaper, report
 | `partial/rollout`         | 2 healthy pods, new ReplicaSet crash-looping                   | `PartiallyAvailable`      |
 | `ds/crashloop`            | DaemonSet crash-looping                                        | `CannotScaleToZero`       |
 | `job/fail`                | Job that fails                                                 | ignored                   |
-| `optout/crashloop`        | Deployment labelled `reaper.bruno.fyi/mode=off`                | untouched                 |
+| `optout/crashloop`        | Deployment labelled `reaper.boop.ninja/mode=off`                | untouched                 |
 
 For speed, the dev ReaperConfig uses `crashLoopDuration: 2m` and
 `minRestarts: 3`.
@@ -39,9 +39,9 @@ For speed, the dev ReaperConfig uses `crashLoopDuration: 2m` and
 ## 2. Report mode (US1)
 
 ```bash
-kubectl get deploy,sts,ds -A -l reaper.bruno.fyi/state -L reaper.bruno.fyi/state
+kubectl get deploy,sts,ds -A -l reaper.boop.ninja/state -L reaper.boop.ninja/state
 kubectl events -n plain --for deploy/crashloop        # CrashLoopObserved, then ReapPlanned
-kubectl get deploy -n plain crashloop -o jsonpath='{.metadata.annotations.reaper\.bruno\.fyi/plan}'
+kubectl get deploy -n plain crashloop -o jsonpath='{.metadata.annotations.reaper\.boop\.ninja/plan}'
 curl -s localhost:8080/metrics | grep reaper_workload_state
 kubectl get deploy -n plain crashloop -o jsonpath='{.spec.replicas}'   # still 2
 ```
@@ -70,10 +70,10 @@ With `maxReapsPerCycle: 1` and three candidates, it takes three cycles, and
 ## 4. Restore (US3)
 
 ```bash
-kubectl annotate deploy -n kustomize crashloop reaper.bruno.fyi/restore=true
+kubectl annotate deploy -n kustomize crashloop reaper.boop.ninja/restore=true
 # within a cycle:
-kubectl get deploy -n kustomize crashloop -o yaml | grep -E 'replicas:|reaper\.bruno\.fyi|reconcile'
-# replicas: 2; no reaper.bruno.fyi/* keys; no reconcile annotation
+kubectl get deploy -n kustomize crashloop -o yaml | grep -E 'replicas:|reaper\.boop\.ninja|reconcile'
+# replicas: 2; no reaper.boop.ninja/* keys; no reconcile annotation
 kubectl scale deploy -n plain crashloop --replicas=1   # manual scale-up = restore, keeps 1
 ```
 
@@ -87,7 +87,7 @@ make test-integration STORY=us3_restore # one story
 ## 6. On roanoke (after the chart and HelmRelease land, report mode)
 
 ```bash
-kubectl get deploy,sts,ds -A -l reaper.bruno.fyi/state=candidate
+kubectl get deploy,sts,ds -A -l reaper.boop.ninja/state=candidate
 ```
 
 Expected (SC-006): the six `slam-prod` Deployments and `fathom-dev/crashloop`.

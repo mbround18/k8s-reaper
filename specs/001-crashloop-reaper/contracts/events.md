@@ -1,6 +1,6 @@
 # Contract: Kubernetes Events
 
-API `events.k8s.io/v1`. `reportingController: reaper.bruno.fyi/k8s-reaper`.
+API `events.k8s.io/v1`. `reportingController: reaper.boop.ninja/k8s-reaper`.
 `reportingInstance` is the pod name. Events are emitted on **transitions** only
 (and on a change of skip reason), never every cycle.
 

@@ -4,14 +4,14 @@
 
 | Label                    | On                                  | Values                                         |
 | ------------------------ | ----------------------------------- | ---------------------------------------------- |
-| `reaper.bruno.fyi/state` | Deployment, StatefulSet, DaemonSet  | `observed`, `candidate`, `reaping`, `reaped`   |
+| `reaper.boop.ninja/state` | Deployment, StatefulSet, DaemonSet  | `observed`, `candidate`, `reaping`, `reaped`   |
 
 It is absent when the reaper holds no state for the object. Meant for
 selection:
 
 ```bash
-kubectl get deploy,sts,ds -A -l reaper.bruno.fyi/state=reaped
-kubectl get deploy,sts,ds -A -l 'reaper.bruno.fyi/state in (candidate,reaping,reaped)'
+kubectl get deploy,sts,ds -A -l reaper.boop.ninja/state=reaped
+kubectl get deploy,sts,ds -A -l 'reaper.boop.ninja/state in (candidate,reaping,reaped)'
 ```
 
 The label sits on the workload's own metadata, never on the pod template, so
@@ -21,7 +21,7 @@ setting it never triggers a rollout.
 
 | Label (or annotation)   | On                    | Values           | Effect                                                                                 |
 | ----------------------- | --------------------- | ---------------- | -------------------------------------------------------------------------------------- |
-| `reaper.bruno.fyi/mode` | Namespace or workload | `off`            | Ignored entirely: not observed, annotated or reported. Existing reaper state is cleared once; a `reaped` workload is restored first. |
+| `reaper.boop.ninja/mode` | Namespace or workload | `off`            | Ignored entirely: not observed, annotated or reported. Existing reaper state is cleared once; a `reaped` workload is restored first. |
 |                         |                       | `report`         | Observed and reported, never acted on (`ReportOnlyScope`)                               |
 |                         |                       | anything else    | Ignored, with a `ConfigInvalid`-style Warning Event on the object                       |
 

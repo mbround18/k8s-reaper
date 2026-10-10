@@ -2,13 +2,13 @@
 
 ## ReaperConfig CRD
 
-`reaperconfigs.reaper.bruno.fyi`, version `v1alpha1`, **cluster-scoped**, with
+`reaperconfigs.reaper.boop.ninja`, version `v1alpha1`, **cluster-scoped**, with
 a status subresource. The reaper reads exactly one object, named by
 `--config-name` (default `default`). Its absence means defaults (report mode).
 Short name `rc`; printer columns `Mode`, `Valid`, `Candidates`, `Reaped`, `Age`.
 
 ```yaml
-apiVersion: reaper.bruno.fyi/v1alpha1
+apiVersion: reaper.boop.ninja/v1alpha1
 kind: ReaperConfig
 metadata:
   name: default
@@ -81,8 +81,8 @@ YAML to stdout, for the chart).
 | `keda.sh`             | scaledobjects                             | get, list, watch          |
 | `helm.toolkit.fluxcd.io` | helmreleases                           | get, list, watch, patch   |
 | `events.k8s.io`       | events                                    | create, patch             |
-| `reaper.bruno.fyi`    | reaperconfigs                             | get, list, watch          |
-| `reaper.bruno.fyi`    | reaperconfigs/status                      | get, patch, update        |
+| `reaper.boop.ninja`    | reaperconfigs                             | get, list, watch          |
+| `reaper.boop.ninja`    | reaperconfigs/status                      | get, patch, update        |
 
 DaemonSets get `patch` only for the reaper's own annotations and labels. No
 `delete`, no access to Secrets, and no `escalate`/`bind`/`impersonate`.

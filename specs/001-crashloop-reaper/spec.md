@@ -138,7 +138,7 @@ to remember what the reaper changed.
 The constitution requires every mutation to be reversible in one step.
 
 **Independent Test**: Reap a test Deployment (Story 2), then run
-`kubectl annotate deploy/<name> reaper.bruno.fyi/restore=true`. Within one
+`kubectl annotate deploy/<name> reaper.boop.ninja/restore=true`. Within one
 cycle `replicas` equals the recorded original. The reconcile-disabled
 annotation is gone (or restored to its previous value). The HelmRelease is
 unsuspended if no other reaped workload still needs it suspended. All reaper
@@ -178,8 +178,8 @@ matters once full mode is on.
 
 **Independent Test**: Change the mode in the cluster configuration object from
 `report` to `full`; the next cycle acts without a pod restart. Label one
-Deployment `reaper.bruno.fyi/mode=off`; it is never observed, annotated or
-reported. Label a namespace `reaper.bruno.fyi/mode=report`; workloads there are
+Deployment `reaper.boop.ninja/mode=off`; it is never observed, annotated or
+reported. Label a namespace `reaper.boop.ninja/mode=report`; workloads there are
 reported but never acted on, even in full mode.
 
 **Acceptance Scenarios**:
@@ -283,7 +283,7 @@ reported but never acted on, even in full mode.
 - **FR-009**: Global mode MUST be `report` (default) or `full`, read at runtime
   from cluster configuration and re-read without a restart.
 - **FR-010**: Namespaces and workloads MAY declare mode `off` or `report` with
-  the `reaper.bruno.fyi/mode` label or annotation. The effective mode MUST be
+  the `reaper.boop.ninja/mode` label or annotation. The effective mode MUST be
   the most restrictive of global, namespace and workload (`off` < `report` <
   `full`).
 - **FR-011**: The reaper MUST NEVER observe or act on its own namespace,
@@ -292,7 +292,7 @@ reported but never acted on, even in full mode.
   include list is set (glob patterns, e.g. `slam-*`), it MUST consider only
   matching namespaces.
 - **FR-012**: In report mode the reaper MUST NOT change `replicas`, Flux
-  annotations or HelmReleases. Its only writes are its own `reaper.bruno.fyi/*`
+  annotations or HelmReleases. Its only writes are its own `reaper.boop.ninja/*`
   annotations and labels, and Events.
 
 **Action (full mode)**
@@ -318,7 +318,7 @@ reported but never acted on, even in full mode.
 
 **Restore**
 
-- **FR-018**: Setting annotation `reaper.bruno.fyi/restore` (any non-empty
+- **FR-018**: Setting annotation `reaper.boop.ninja/restore` (any non-empty
   value) on a reaped workload MUST make the reaper, within one cycle, reverse
   exactly the recorded actions. It scales back to the original replicas, restores
   the previous reconcile annotation value, and removes the workload from the
@@ -340,8 +340,8 @@ reported but never acted on, even in full mode.
   "reaped" and "action failed". It MUST also export them over OpenTelemetry when
   an OTLP endpoint is configured.
 - **FR-023**: The reaper MUST label workloads with their state
-  (`reaper.bruno.fyi/state=observed|candidate|reaped`) so that
-  `kubectl get deploy,sts -A -l reaper.bruno.fyi/state=reaped` lists everything
+  (`reaper.boop.ninja/state=observed|candidate|reaped`) so that
+  `kubectl get deploy,sts -A -l reaper.boop.ninja/state=reaped` lists everything
   it holds stopped.
 - **FR-024**: The reaper MUST publish a summary on its configuration object's
   status: effective config generation, last cycle time, counts per state, and a
@@ -408,8 +408,8 @@ reported but never acted on, even in full mode.
 - **Defaults**: duration threshold 30 minutes; restart threshold 10 (about 25
   minutes of kubelet backoff); recovery window 10 minutes; cycle interval 60 s;
   1 reap per cycle; at most 5 workloads reaped at once.
-- **Annotation/label/API prefix** is `reaper.bruno.fyi`, a domain the owner
-  controls (see Question 1).
+- **Annotation/label/API prefix** is `reaper.boop.ninja`, grouping it with the
+  owner's other boop.ninja services (Question 1, answered 2026-10-10).
 - **Configuration lives in a cluster-scoped custom resource** with a single
   instance named `default`. It is rendered by the Helm chart and changed through
   Git like everything else. Process settings (metrics port, log level, OTLP
@@ -436,19 +436,14 @@ reported but never acted on, even in full mode.
 
 ## Open Questions for the Owner
 
-These are the only points left open. Each has a default (above) that the plan
-uses until answered.
+Question 1 is answered; Questions 2 and 3 are still open. Each has a default
+(above) that the plan uses until answered.
 
-### Question 1: API group and annotation prefix
+### Question 1: API group and annotation prefix — answered
 
-**Context**: Every annotation, label, Event reporter and the CRD group use one
-DNS prefix. Changing it after release is a breaking change.
-
-| Option | Answer                            | Implications                                  |
-| ------ | --------------------------------- | --------------------------------------------- |
-| A      | `reaper.bruno.fyi` (default)      | Owner's personal domain; short                |
-| B      | `reaper.boop.ninja`               | Groups it with the other boop.ninja services  |
-| Custom | Another domain the owner controls | Any DNS subdomain the owner controls          |
+**Answer** (2026-10-10): `reaper.boop.ninja`. Every annotation, label, Event
+reporter and the CRD group use this prefix. Changing it after release is a
+breaking change.
 
 ### Question 2: Act on partially available workloads?
 
