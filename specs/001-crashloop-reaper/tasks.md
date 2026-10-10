@@ -25,10 +25,10 @@ parallel (different files, no unfinished dependency).
 
 ## Phase 2: Foundational (blocks all stories)
 
-- [ ] T010 Write tests first in `crates/reaper-core/src/config.rs`: defaults match data-model; duration parsing (`90s`, `30m`, `1h30m`, invalid); range validation returns all field errors
-- [ ] T011 Implement `Config`, `Mode` (`Off < Report < Full`), duration parsing and validation in `crates/reaper-core/src/config.rs`
+- [X] T010 Write tests first in `crates/reaper-core/src/config.rs`: defaults match data-model; duration parsing (`90s`, `30m`, `1h30m`, invalid); range validation returns all field errors
+- [X] T011 Implement `Config`, `Mode` (`Off < Report < Full`), duration parsing and validation in `crates/reaper-core/src/config.rs`
 - [ ] T012 [P] Implement the core input model (`Snapshot`, `WorkloadView`, `PodView`, `ContainerView`, `FluxRefs`, `HelmReleaseView`, `NamespaceView`) and test fixture builders in `crates/reaper-core/src/model.rs` and `crates/reaper-core/src/testing.rs` (`#[cfg(test)]` + `pub` behind a `testing` module for adapter tests)
-- [ ] T013 Write tests first, then implement the annotation codec in `crates/reaper-core/src/record.rs`. It encodes and decodes every key in contracts/annotations.md, round-trips, and rejects malformed values without panicking.
+- [X] T013 Write tests first, then implement the annotation codec in `crates/reaper-core/src/record.rs`. It encodes and decodes every key in contracts/annotations.md, round-trips, and rejects malformed values without panicking.
 - [ ] T014 [P] Define `Plan`, `Action`, `SkipReason`, `Transition`, `CyclePlan`, with stable JSON serialisation (snapshot tests via `insta`), in `crates/reaper-core/src/plan.rs`
 - [ ] T015 [P] Define ports `ClusterWriter`, `EventSink` and `Telemetry` (native `async fn`, no runtime) in `crates/reaper-core/src/ports.rs`, with in-memory fakes in `crates/reaper-core/src/testing.rs`
 - [ ] T016 [P] Define the `ReaperConfig` CustomResource (spec/status per contracts/config.md, `schemars` ranges and enums) and its conversion to `reaper_core::Config` in `crates/reaper-kube/src/crd.rs`. Wire `k8s-reaper crd` to print the YAML. Add a golden-file test `crates/reaper-kube/tests/crd_golden.rs`.
