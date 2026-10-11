@@ -1,7 +1,8 @@
 //! `k8s-reaper run`: wire the adapters to the core and run the cycle loop.
 
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use kube::{Api, Client};
@@ -10,11 +11,13 @@ use reaper_core::Timestamp;
 use reaper_core::config::Config;
 use reaper_core::decide::decide;
 use reaper_core::executor::{Outcome, execute};
+use reaper_core::notify::{Notifier as _, Throttle};
 use reaper_core::plan::CyclePlan;
 use reaper_kube::crd::ReaperConfig;
 use reaper_kube::events::KubeEventSink;
 use reaper_kube::snapshot::Caches;
 use reaper_kube::writer::KubeWriter;
+use reaper_notify::{ChannelError, ChannelSet, NotifyHandle};
 use reaper_observability::http::{self, Health};
 use reaper_observability::telemetry::{CycleResult, Metrics};
 use tokio::sync::watch;
@@ -42,7 +45,11 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         .context("--namespace / REAPER_NAMESPACE is required")?;
 
     let mut registry = Registry::default();
-    let metrics = Metrics::register(&mut registry, env!("CARGO_PKG_VERSION"), GIT_SHA);
+    let metrics = Arc::new(Metrics::register(
+        &mut registry,
+        env!("CARGO_PKG_VERSION"),
+        GIT_SHA,
+    ));
     let health = Health::new();
 
     let (stop_tx, stop) = watch::channel(false);
@@ -87,6 +94,9 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     let writer = KubeWriter::new(client.clone());
     let events = KubeEventSink::new(client.clone(), instance);
     let mut configs = ConfigSource::new(Api::all(client), args.config_name.clone());
+    let notifier = start_notifier(&metrics)?;
+    let mut channels = Channels::default();
+    let mut throttle = Throttle::default();
 
     loop {
         let started = Instant::now();
@@ -96,8 +106,14 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         let snap = caches.snapshot(now());
         let plan = decide(&snap, &config);
         log_plan(&plan);
-        let outcome = execute(&snap, &plan, config.mode, &writer, &events, &metrics).await;
+        let mut outcome = execute(&snap, &plan, config.mode, &writer, &events, &*metrics).await;
         log_outcome(&outcome);
+
+        channels.reload(&args.notifications_dir, &notifier, &metrics);
+        let transitions = std::mem::take(&mut outcome.notifications);
+        for n in throttle.admit(&config.notifications, transitions, snap.now) {
+            notifier.enqueue(n, &config.notifications);
+        }
 
         let result = if config_ok && outcome.failures.is_empty() {
             CycleResult::Ok
@@ -113,9 +129,72 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         }
     }
 
+    let left = notifier.shutdown(NOTIFY_DRAIN).await;
+    if left > 0 {
+        warn!(left, "notifications not delivered before shutdown");
+    }
     drop(caches);
     let _ = server.await;
     Ok(())
+}
+
+/// How long shutdown waits for queued notifications (contracts/notifications.md).
+const NOTIFY_DRAIN: Duration = Duration::from_secs(5);
+
+fn start_notifier(metrics: &Arc<Metrics>) -> anyhow::Result<NotifyHandle> {
+    let metrics = Arc::clone(metrics);
+    let settings = reaper_notify::Settings {
+        user_agent: format!("k8s-reaper/{}", env!("CARGO_PKG_VERSION")),
+        ..reaper_notify::Settings::default()
+    };
+    NotifyHandle::start(
+        settings,
+        Arc::new(
+            move |channel: &str,
+                  provider: reaper_notify::Provider,
+                  result: reaper_notify::Delivery| {
+                metrics.notification(channel, provider.as_str(), result.as_str());
+            },
+        ),
+    )
+    .context("starting notification delivery")
+}
+
+/// The channel directory, re-read every cycle so a rotated Secret takes effect
+/// without a restart. Logs only when the set of channels changes.
+#[derive(Default)]
+struct Channels {
+    valid: Vec<String>,
+    invalid: Vec<(String, ChannelError)>,
+}
+
+impl Channels {
+    fn reload(&mut self, dir: &Path, notifier: &NotifyHandle, metrics: &Metrics) {
+        let ChannelSet { valid, invalid } = reaper_notify::load_dir(dir);
+        let mut rows: Vec<(String, String, bool)> = valid
+            .iter()
+            .map(|c| (c.name().to_owned(), c.provider().as_str().to_owned(), true))
+            .collect();
+        rows.extend(
+            invalid
+                .iter()
+                .map(|(name, _)| (name.clone(), "unknown".to_owned(), false)),
+        );
+        metrics.notification_channels(&rows);
+
+        let names: Vec<String> = valid.iter().map(|c| c.name().to_owned()).collect();
+        if names != self.valid {
+            info!(channels = ?names, "notification channels loaded");
+            self.valid = names;
+        }
+        if invalid != self.invalid {
+            for (channel, err) in &invalid {
+                warn!(channel, %err, "notification channel ignored");
+            }
+            self.invalid = invalid;
+        }
+        notifier.set_channels(valid);
+    }
 }
 
 /// The active configuration: built-in defaults while no ReaperConfig exists,

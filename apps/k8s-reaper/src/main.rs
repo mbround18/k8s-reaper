@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use reaper_observability::tracing::LogFormat;
@@ -47,6 +48,15 @@ pub struct RunArgs {
     /// `json` or `text`.
     #[arg(long, env = "REAPER_LOG_FORMAT", default_value = "json", global = true)]
     pub log_format: LogFormat,
+    /// Directory of notification channel files (a mounted Secret); missing
+    /// or empty means notifications are off.
+    #[arg(
+        long,
+        env = "REAPER_NOTIFICATIONS_DIR",
+        default_value = "/etc/k8s-reaper/notifications",
+        global = true
+    )]
+    pub notifications_dir: PathBuf,
 }
 
 fn main() -> anyhow::Result<()> {

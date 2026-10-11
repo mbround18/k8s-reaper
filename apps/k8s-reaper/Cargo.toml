@@ -15,6 +15,7 @@ prometheus-client.workspace = true
 reaper-core.workspace = true
 reaper-flux.workspace = true
 reaper-kube.workspace = true
+reaper-notify.workspace = true
 reaper-observability.workspace = true
 tokio.workspace = true
 tracing.workspace = true

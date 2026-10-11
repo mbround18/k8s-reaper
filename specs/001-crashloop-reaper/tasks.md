@@ -218,17 +218,17 @@ mounted Secret, `ReapPlanned` opt-in).
 
 ### Tests first
 
-- [ ] T090 [P] [US6] `crates/reaper-core/src/notify.rs` tests: the `Notification` built from a transition carries reason, workload, state, mode and the Event note; reason filters (global and per channel) and `minInterval` de-duplication are pure functions of time and history (FR-037)
-- [ ] T091 [P] [US6] `crates/reaper-notify/tests/channels.rs`: URL → provider inference and `format=` override, `http://` and plain SMTP refused, `from`/`to` parsing, files starting with `.` ignored, and no error or `Debug` output that contains the URL or credentials (FR-035, FR-036, FR-039)
-- [ ] T092 [P] [US6] `crates/reaper-notify/tests/delivery.rs` against a local mock HTTP server: Discord, Slack and generic payload shapes match contracts/notifications.md; timeout, 429 `Retry-After`, non-retried 4xx, bounded retries, queue overflow drops oldest (FR-038, FR-040)
+- [X] T090 [P] [US6] `crates/reaper-core/src/notify.rs` tests: the `Notification` built from a transition carries reason, workload, state, mode and the Event note; reason filters (global and per channel) and `minInterval` de-duplication are pure functions of time and history (FR-037)
+- [X] T091 [P] [US6] `crates/reaper-notify/tests/channels.rs`: URL → provider inference and `format=` override, `http://` and plain SMTP refused, `from`/`to` parsing, files starting with `.` ignored, and no error or `Debug` output that contains the URL or credentials (FR-035, FR-036, FR-039)
+- [X] T092 [P] [US6] `crates/reaper-notify/tests/delivery.rs` against a local mock HTTP server: Discord, Slack and generic payload shapes match contracts/notifications.md; timeout, 429 `Retry-After`, non-retried 4xx, bounded retries, queue overflow drops oldest (FR-038, FR-040)
 
 ### Implementation
 
-- [ ] T093 [US6] Add the `Notifier` port and `notify.rs` filtering to `reaper-core` (no new dependencies); the executor hands transitions to it after writes, alongside `EventSink`
-- [ ] T094 [US6] Add `notifications` to `ReaperConfig.spec` and core `Config` with validation (`reasons` are known Event reasons, `minInterval` 0–24h), in `crates/reaper-kube/src/crd.rs` and `crates/reaper-core/src/config.rs`
-- [ ] T095 [US6] Create adapter crate `crates/reaper-notify`: channel directory loader (re-read each cycle), Discord/Slack/generic webhook senders, SMTP sender, bounded queue worker with retry/backoff; secrets wrapped in a redacting type
-- [ ] T096 [US6] Add `reaper_notifications_total` and `reaper_notification_channels` to `crates/reaper-observability/src/telemetry.rs` and the exposition test
-- [ ] T097 [US6] Wire `--notifications-dir` / `REAPER_NOTIFICATIONS_DIR` and the worker into `apps/k8s-reaper/src/main.rs`; graceful shutdown drains the queue for at most 5 s
+- [X] T093 [US6] Add the `Notifier` port and `notify.rs` filtering to `reaper-core` (no new dependencies); the executor hands transitions to it after writes, alongside `EventSink`
+- [X] T094 [US6] Add `notifications` to `ReaperConfig.spec` and core `Config` with validation (`reasons` are known Event reasons, `minInterval` 0–24h), in `crates/reaper-kube/src/crd.rs` and `crates/reaper-core/src/config.rs`
+- [X] T095 [US6] Create adapter crate `crates/reaper-notify`: channel directory loader (re-read each cycle), Discord/Slack/generic webhook senders, SMTP sender, bounded queue worker with retry/backoff; secrets wrapped in a redacting type
+- [X] T096 [US6] Add `reaper_notifications_total` and `reaper_notification_channels` to `crates/reaper-observability/src/telemetry.rs` and the exposition test
+- [X] T097 [US6] Wire `--notifications-dir` / `REAPER_NOTIFICATIONS_DIR` and the worker into `apps/k8s-reaper/src/main.rs`; graceful shutdown drains the queue for at most 5 s
 - [ ] T098 [US6] Dev: echo server and mail catcher in `deploy/dev/notify/` (e.g. a small HTTP echo and Mailpit), a sample Secret using `example.test` hosts, and integration test `apps/k8s-reaper/tests/us6_notify.rs` (`#[ignore]`) for SC-009
 - [ ] T099 [P] [US6] `docs/guides/notifications.md`: creating the Secret, one example per provider, choosing reasons; and chart values (Secret name, `optional: true` mount) noted for T076
 

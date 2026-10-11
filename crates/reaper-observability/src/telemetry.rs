@@ -84,6 +84,23 @@ struct ConfigLabels {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct NotificationLabels {
+    channel: String,
+    provider: String,
+    result: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct ChannelLabels {
+    channel: String,
+    provider: String,
+    valid: &'static str,
+}
+
+/// One channel file read in the last cycle: name, provider, valid.
+pub type ChannelRow = (String, String, bool);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct BuildLabels {
     version: String,
     git_sha: String,
@@ -156,10 +173,17 @@ struct Otel {
     last_cycle: OtelGauge<f64>,
     config_info: OtelGauge<u64>,
     config_valid: OtelGauge<u64>,
+    notifications: OtelCounter<u64>,
+    _notification_channels: ObservableGauge<u64>,
 }
 
 impl Otel {
-    fn new(rows: &Arc<Mutex<Vec<WorkloadRow>>>, version: &str, git_sha: &str) -> Self {
+    fn new(
+        rows: &Arc<Mutex<Vec<WorkloadRow>>>,
+        channels: &Arc<Mutex<Vec<ChannelRow>>>,
+        version: &str,
+        git_sha: &str,
+    ) -> Self {
         let meter = opentelemetry::global::meter(METER);
         let r = Arc::clone(rows);
         let workload_state = meter
@@ -196,6 +220,22 @@ impl Otel {
                 }
             })
             .build();
+        let c = Arc::clone(channels);
+        let notification_channels = meter
+            .u64_observable_gauge("reaper.notification.channels")
+            .with_callback(move |o| {
+                for (channel, provider, valid) in lock(&c).iter() {
+                    o.observe(
+                        1,
+                        &[
+                            KeyValue::new("channel", channel.clone()),
+                            KeyValue::new("provider", provider.clone()),
+                            KeyValue::new("valid", valid.to_string()),
+                        ],
+                    );
+                }
+            })
+            .build();
         meter.u64_gauge("reaper.build.info").build().record(
             1,
             &[
@@ -219,6 +259,8 @@ impl Otel {
                 .build(),
             config_info: meter.u64_gauge("reaper.config.info").build(),
             config_valid: meter.u64_gauge("reaper.config.valid").build(),
+            notifications: meter.u64_counter("reaper.notifications").build(),
+            _notification_channels: notification_channels,
         }
     }
 }
@@ -234,6 +276,10 @@ pub struct Metrics {
     last_cycle: Gauge<f64, AtomicU64>,
     config_info: Family<ConfigLabels, Gauge>,
     config_valid: Gauge,
+    notifications: Family<NotificationLabels, Counter>,
+    notification_channels: Family<ChannelLabels, Gauge>,
+    /// The last `notification_channels` rows, read by the `OTel` callback.
+    channels: Arc<Mutex<Vec<ChannelRow>>>,
     /// Label sets emitted by the last `workloads` call.
     emitted: Mutex<Emitted>,
     /// The last `workloads` rows, read by the `OTel` callbacks.
@@ -245,6 +291,7 @@ impl Metrics {
     /// Registers every metric into `registry` and sets `reaper_build_info`.
     pub fn register(registry: &mut Registry, version: &str, git_sha: &str) -> Self {
         let rows = Arc::new(Mutex::new(Vec::new()));
+        let channels = Arc::new(Mutex::new(Vec::new()));
         let metrics = Metrics {
             workload_state: Family::default(),
             workload_skipped: Family::default(),
@@ -255,9 +302,12 @@ impl Metrics {
             last_cycle: Gauge::default(),
             config_info: Family::default(),
             config_valid: Gauge::default(),
+            notifications: Family::default(),
+            notification_channels: Family::default(),
             emitted: Mutex::default(),
-            otel: Otel::new(&rows, version, git_sha),
+            otel: Otel::new(&rows, &channels, version, git_sha),
             rows,
+            channels,
         };
         let build_info = Family::<BuildLabels, Gauge>::default();
         build_info
@@ -308,6 +358,16 @@ impl Metrics {
             "1 if the latest ReaperConfig generation is valid, else 0",
             metrics.config_valid.clone(),
         );
+        registry.register(
+            "reaper_notifications",
+            "Notifications by channel and result",
+            metrics.notifications.clone(),
+        );
+        registry.register(
+            "reaper_notification_channels",
+            "1 per channel file read in the last cycle",
+            metrics.notification_channels.clone(),
+        );
         registry.register("reaper_build_info", "Build version", build_info);
         metrics
     }
@@ -356,6 +416,40 @@ impl Metrics {
     pub fn config_valid(&self, valid: bool) {
         self.config_valid.set(i64::from(valid));
         self.otel.config_valid.record(u64::from(valid), &[]);
+    }
+
+    /// Counts one notification result (`sent`, `failed`, `dropped`, `filtered`).
+    pub fn notification(&self, channel: &str, provider: &str, result: &str) {
+        self.notifications
+            .get_or_create(&NotificationLabels {
+                channel: channel.to_owned(),
+                provider: provider.to_owned(),
+                result: result.to_owned(),
+            })
+            .inc();
+        self.otel.notifications.add(
+            1,
+            &[
+                KeyValue::new("channel", channel.to_owned()),
+                KeyValue::new("provider", provider.to_owned()),
+                KeyValue::new("result", result.to_owned()),
+            ],
+        );
+    }
+
+    /// Replaces `reaper_notification_channels` with this cycle's channel files.
+    pub fn notification_channels(&self, rows: &[ChannelRow]) {
+        self.notification_channels.clear();
+        for (channel, provider, valid) in rows {
+            self.notification_channels
+                .get_or_create(&ChannelLabels {
+                    channel: channel.clone(),
+                    provider: provider.clone(),
+                    valid: if *valid { "true" } else { "false" },
+                })
+                .set(1);
+        }
+        *lock(&self.channels) = rows.to_vec();
     }
 }
 
@@ -445,6 +539,16 @@ mod tests {
         ("reaper_last_cycle_timestamp_seconds", "gauge", &[]),
         ("reaper_config_info", "gauge", &["mode", "generation"]),
         ("reaper_config_valid", "gauge", &[]),
+        (
+            "reaper_notifications_total",
+            "counter",
+            &["channel", "provider", "result"],
+        ),
+        (
+            "reaper_notification_channels",
+            "gauge",
+            &["channel", "provider", "valid"],
+        ),
         ("reaper_build_info", "gauge", &["version", "git_sha"]),
     ];
 
@@ -559,9 +663,26 @@ mod tests {
         );
         metrics.config(Mode::Report, 3);
         metrics.config_valid(true);
+        metrics.notification("ops-discord", "discord", "sent");
+        metrics.notification_channels(&[("ops-discord".into(), "discord".into(), true)]);
 
         let body = encode(&registry);
         assert_eq!(shape(&body), contract(), "{body}");
+    }
+
+    #[test]
+    fn notification_channels_keep_only_the_last_cycle() {
+        let (registry, metrics) = metrics();
+        metrics.notification_channels(&[
+            ("ops-discord".into(), "discord".into(), true),
+            ("broken".into(), "unknown".into(), false),
+        ]);
+        metrics.notification_channels(&[("ops-discord".into(), "discord".into(), true)]);
+        let body = encode(&registry);
+        assert!(body.contains(
+            r#"reaper_notification_channels{channel="ops-discord",provider="discord",valid="true"} 1"#
+        ));
+        assert!(!body.contains("broken"), "{body}");
     }
 
     #[test]
