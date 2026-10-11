@@ -71,13 +71,13 @@ and a `plan` annotation. No replicas or Flux object changes.
 - [X] T029 [US1] Implement `ClusterWriter` for annotation and label patches in `crates/reaper-kube/src/writer.rs`
 - [X] T030 [P] [US1] Implement `EventSink` over the `events.k8s.io/v1` Recorder (reporting controller `reaper.boop.ninja/k8s-reaper`) in `crates/reaper-kube/src/events.rs`
 - [X] T031 [P] [US1] Implement `Telemetry` in `crates/reaper-observability/src/telemetry.rs`: every metric in contracts/metrics.md via `prometheus-client`, mirrored to OTel meters, with stale series removed when a state clears. Add a test that the exposition contains exactly the contracted names and labels.
-- [ ] T032 [US1] Wire `run` in `apps/k8s-reaper/src/main.rs`:
+- [X] T032 [US1] Wire `run` in `apps/k8s-reaper/src/main.rs`:
   - clap flags/env per contracts/config.md;
   - build adapters, then the loop: wait for caches, snapshot, `decide`, executor;
   - interval from config; readiness set after first cycle;
   - built-in defaults (report mode) while ReaperConfig is absent.
 - [X] T033 [US1] Add k3d dev setup and fixtures in `deploy/dev/`: `k3d.yaml`, Flux install, dev ReaperConfig with short thresholds, and the fixtures table from quickstart §1
-- [ ] T034 [US1] Write integration test `apps/k8s-reaper/tests/us1_report.rs` (`#[ignore]`). It covers US1 scenarios 1–5, and checks that replicas and Flux objects are unchanged after N cycles (SC-001).
+- [X] T034 [US1] Write integration test `apps/k8s-reaper/tests/us1_report.rs` (`#[ignore]`). It covers US1 scenarios 1–5, and checks that replicas and Flux objects are unchanged after N cycles (SC-001).
 
 **Checkpoint**: deployable in report mode. This is the MVP increment.
 

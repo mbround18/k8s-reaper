@@ -1207,10 +1207,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "k8s-openapi",
+ "kube",
+ "prometheus-client",
  "reaper-core",
  "reaper-flux",
  "reaper-kube",
  "reaper-observability",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

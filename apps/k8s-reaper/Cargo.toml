@@ -10,10 +10,18 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+kube.workspace = true
+prometheus-client.workspace = true
 reaper-core.workspace = true
 reaper-flux.workspace = true
 reaper-kube.workspace = true
 reaper-observability.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+k8s-openapi.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
