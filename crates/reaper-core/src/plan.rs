@@ -237,6 +237,16 @@ pub struct CyclePlan {
     pub decisions: Vec<Decision>,
     pub unsupported: Vec<UnsupportedPod>,
     pub invalid_settings: Vec<InvalidSetting>,
+    /// HelmRelease holds to release because the workload is gone or no
+    /// longer held.
+    pub stale_holds: Vec<StaleHold>,
+}
+
+/// A workload in a HelmRelease's `held-for` that the reaper no longer holds.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StaleHold {
+    pub helm_release: NsName,
+    pub workload: WorkloadRef,
 }
 
 /// What an Event reports (contracts/events.md). Emitted only on change.

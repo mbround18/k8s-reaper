@@ -89,7 +89,7 @@ and a `plan` annotation. No replicas or Flux object changes.
 
 ### Tests first
 
-- [ ] T040 [P] [US2] `decide.rs` tests:
+- [X] T040 [P] [US2] `decide.rs` tests:
   - reap action list per case: plain, kustomize, Helm, Helm whose HelmRelease is kustomize-managed, HelmRelease already suspended, reconcile annotation already set (FR-013 to FR-015);
   - `RateLimited` and `ReapCeilingReached` with deterministic ordering (FR-017);
   - Flux toggle off on a Flux-managed workload → `ReportOnlyScope` (FR-027).
@@ -101,7 +101,7 @@ and a `plan` annotation. No replicas or Flux object changes.
 
 ### Implementation
 
-- [ ] T043 [US2] Extend `decide()` with the `Reap` plan (remaining steps only), limits and the ceiling in `crates/reaper-core/src/decide.rs`
+- [X] T043 [US2] Extend `decide()` with the `Reap` plan (remaining steps only), limits and the ceiling in `crates/reaper-core/src/decide.rs`
 - [ ] T044 [US2] Implement the executor's full path with per-step recording in `crates/reaper-core/src/executor.rs`
 - [ ] T045 [P] [US2] Implement the minimal HelmRelease v2 type and `ApiResource` in `crates/reaper-flux/src/helmrelease.rs`
 - [ ] T046 [US2] Implement HelmRelease hold/release patches in `crates/reaper-flux/src/holds.rs` (part of the `ClusterWriter` impl, composed in the app)
@@ -132,7 +132,7 @@ its pre-reap state.
 
 ### Implementation
 
-- [ ] T052 [US3] Implement the `Restore` plan and the deleted/recreated-workload cleanup of `held-for` in `crates/reaper-core/src/decide.rs`
+- [X] T052 [US3] Implement the `Restore` plan and the deleted/recreated-workload cleanup of `held-for` in `crates/reaper-core/src/decide.rs`
 - [ ] T053 [US3] Implement restore execution in `crates/reaper-core/src/executor.rs` and the release patch in `crates/reaper-flux/src/holds.rs`
 - [ ] T054 [US3] Trigger an immediate cycle on a `restore` annotation change, or a replicas change on a `reaped` workload, from the watch stream in `crates/reaper-kube/src/snapshot.rs` and `apps/k8s-reaper/src/main.rs`
 - [ ] T055 [US3] Write integration test `apps/k8s-reaper/tests/us3_restore.rs` (`#[ignore]`). It checks an exact pre-reap state diff after restore for each fixture (SC-003).

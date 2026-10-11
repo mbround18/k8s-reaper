@@ -13,9 +13,16 @@ use crate::config::{
 };
 use crate::detect::{WorkloadPods, group_pods};
 use crate::glob::any_matches;
-use crate::model::{ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadView};
-use crate::plan::{Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, SkipReason};
-use crate::record::{CRASHLOOP_DURATION, MIN_RESTARTS, MODE_KEY, State, WorkloadRecord};
+use crate::model::{
+    NsName, ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadRef, WorkloadView,
+};
+use crate::plan::{
+    Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, RestoreKind, SkipReason, StaleHold,
+};
+use crate::record::{
+    CRASHLOOP_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold, MIN_RESTARTS, MODE_KEY, State,
+    WorkloadRecord,
+};
 use crate::time::parse_duration;
 
 /// Decides every in-scope workload. Decisions come back longest crash-looping
@@ -49,12 +56,76 @@ pub fn decide(snap: &Snapshot, config: &Config) -> CyclePlan {
             .then_with(|| a.workload.name.cmp(&b.workload.name))
             .then_with(|| a.workload.kind.cmp(&b.workload.kind))
     });
+    apply_limits(snap, config, &mut decisions);
 
     CyclePlan {
         decisions,
         unsupported,
         invalid_settings: invalid.into_iter().collect(),
+        stale_holds: stale_holds(snap),
     }
+}
+
+/// The reaper's state label on every workload in the snapshot.
+fn states(snap: &Snapshot) -> BTreeMap<&WorkloadRef, State> {
+    snap.workloads
+        .iter()
+        .filter_map(|w| Some((&w.workload, w.state_label.as_deref()?.parse().ok()?)))
+        .collect()
+}
+
+/// FR-017, in decision order: at most `maxReapsPerCycle` new reaps a cycle,
+/// and none while `maxReaped` workloads are already held. A reap that is
+/// already under way (`reaping`) is finished regardless.
+fn apply_limits(snap: &Snapshot, config: &Config, decisions: &mut [Decision]) {
+    let states = states(snap);
+    let mut held = states
+        .values()
+        .filter(|s| matches!(s, State::Reaping | State::Reaped))
+        .count();
+    let mut this_cycle = 0;
+    for d in decisions {
+        let Plan::Reap { actions } = &mut d.plan else {
+            continue;
+        };
+        if states.get(&d.workload) == Some(&State::Reaping) {
+            continue;
+        }
+        let reason = if this_cycle >= config.limits.max_reaps_per_cycle as usize {
+            SkipReason::RateLimited
+        } else if held >= config.limits.max_reaped as usize {
+            SkipReason::ReapCeilingReached
+        } else {
+            this_cycle += 1;
+            held += 1;
+            continue;
+        };
+        d.plan = Plan::Skip {
+            reason,
+            would: std::mem::take(actions),
+        };
+    }
+}
+
+/// HelmRelease holds naming a workload that is gone, or that the reaper no
+/// longer holds (deleted and recreated, or its state was removed by hand).
+fn stale_holds(snap: &Snapshot) -> Vec<StaleHold> {
+    let states = states(snap);
+    snap.helm_releases
+        .values()
+        .flat_map(|hr| {
+            let (hold, _) = HelmReleaseHold::decode(&hr.reaper_annotations);
+            let states = &states;
+            hold.held_for.into_iter().filter_map(move |workload| {
+                let still_held =
+                    matches!(states.get(&workload), Some(State::Reaping | State::Reaped));
+                (!still_held).then(|| StaleHold {
+                    helm_release: hr.helm_release.clone(),
+                    workload,
+                })
+            })
+        })
+        .collect()
 }
 
 /// FR-011: never the reaper's own namespace, never an excluded one, and only
@@ -173,9 +244,13 @@ fn decide_workload(
     let has_state = record.state.is_some() || record.crashloop_since.is_some();
 
     match record.state {
-        // Reap execution and restore are US2/US3 (T043, T05x).
-        Some(State::Reaped) => return decision(Plan::Held, record.crashloop_since, None, None),
-        Some(State::Reaping) => return decision(Plan::Nothing, None, None, None),
+        Some(State::Reaped | State::Reaping) => {
+            let plan = held_plan(snap, w, &record, mode);
+            return decision(plan, record.crashloop_since, None, None);
+        }
+        _ if record.restore && mode != Mode::Off => {
+            return decision(Plan::RestoreIgnored, None, None, None);
+        }
         _ => {}
     }
     if mode == Mode::Off || w.spec_replicas == Some(0) {
@@ -251,6 +326,124 @@ fn candidate_plan(snap: &Snapshot, config: &Config, w: &WorkloadView, mode: Mode
     }
 }
 
+/// A workload the reaper is reaping or has reaped (research R6): restore it
+/// when asked to, when opted out or when a person scaled it up after the
+/// reap; otherwise finish an interrupted reap, or keep holding it.
+fn held_plan(snap: &Snapshot, w: &WorkloadView, record: &WorkloadRecord, mode: Mode) -> Plan {
+    let reaped = record.state == Some(State::Reaped);
+    let kind = if mode == Mode::Off {
+        Some(RestoreKind::OptedOut)
+    } else if record.restore {
+        Some(RestoreKind::Requested)
+    } else if reaped && w.spec_replicas.is_some_and(|n| n > 0) {
+        Some(RestoreKind::ManualScaleUp)
+    } else {
+        None
+    };
+    if let Some(kind) = kind {
+        return Plan::Restore {
+            kind,
+            actions: restore_actions(snap, w, record, kind),
+        };
+    }
+    if reaped {
+        return Plan::Held;
+    }
+    Plan::Reap {
+        actions: remaining_reap_actions(snap, w, record),
+    }
+}
+
+/// The HelmRelease this workload holds: as recorded, or as found in its
+/// `held-for` when the reap stopped before recording it.
+fn held_helm_release(snap: &Snapshot, w: &WorkloadView, record: &WorkloadRecord) -> Option<NsName> {
+    record.helm_release.clone().or_else(|| {
+        let hr = w.flux.helm_release.as_ref()?;
+        let (hold, _) = HelmReleaseHold::decode(&snap.helm_releases.get(hr)?.reaper_annotations);
+        hold.held_for.contains(&w.workload).then(|| hr.clone())
+    })
+}
+
+fn restore_actions(
+    snap: &Snapshot,
+    w: &WorkloadView,
+    record: &WorkloadRecord,
+    kind: RestoreKind,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    if let Some(hr) = held_helm_release(snap, w, record) {
+        let (hold, _) = snap
+            .helm_releases
+            .get(&hr)
+            .map(|v| HelmReleaseHold::decode(&v.reaper_annotations))
+            .unwrap_or_default();
+        let last = hold.held_for.iter().all(|h| *h == w.workload);
+        actions.push(Action::ReleaseHelmRelease {
+            helm_release: hr,
+            resume: last && hold.suspended_by_reaper == Some(true),
+            restore_reconcile: hold.previous_reconcile.filter(|_| last),
+        });
+    }
+    // A person who scaled it up chose the replicas; otherwise put back what
+    // was there (1 if that was never recorded). Already there means a crash
+    // between restore steps: just finish.
+    let target = record.original_replicas.unwrap_or(1);
+    if kind != RestoreKind::ManualScaleUp && w.spec_replicas != Some(target) {
+        actions.push(Action::ScaleTo { replicas: target });
+    }
+    actions.push(Action::ClearReaperState {
+        restore_reconcile: record.previous_reconcile.clone(),
+    });
+    actions
+}
+
+/// The steps of an interrupted reap that are not visible as done yet
+/// (FR-016). Recording is done: the state label says `reaping`.
+fn remaining_reap_actions(
+    snap: &Snapshot,
+    w: &WorkloadView,
+    record: &WorkloadRecord,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    if w.flux.kustomization.is_some()
+        && w.flux.reconcile_annotation.as_deref() != Some(FLUX_RECONCILE_DISABLED)
+    {
+        actions.push(Action::DisableKustomizeReconcile(w.workload.object_ref()));
+    }
+    if let Some(hr) = &w.flux.helm_release {
+        let in_hold = snap.helm_releases.get(hr).is_some_and(|v| {
+            HelmReleaseHold::decode(&v.reaper_annotations)
+                .0
+                .held_for
+                .contains(&w.workload)
+        });
+        if !in_hold || record.helm_release.is_none() {
+            actions.push(hold_action(snap, hr));
+        }
+    }
+    if w.spec_replicas != Some(0) {
+        actions.push(Action::ScaleTo { replicas: 0 });
+    }
+    actions.push(Action::MarkReaped);
+    actions
+}
+
+/// The hold as it will be placed: suspend only what nobody suspended yet.
+fn hold_action(snap: &Snapshot, hr: &NsName) -> Action {
+    let view = snap.helm_releases.get(hr);
+    let (hold, _) = view
+        .map(|v| HelmReleaseHold::decode(&v.reaper_annotations))
+        .unwrap_or_default();
+    Action::HoldHelmRelease {
+        helm_release: hr.clone(),
+        suspend: hold.suspended_by_reaper.is_none() && !view.is_some_and(|v| v.suspended),
+        disable_reconcile: view.is_some_and(|v| {
+            v.kustomization.is_some()
+                && v.reconcile_annotation.as_deref() != Some(FLUX_RECONCILE_DISABLED)
+        }),
+    }
+}
+
 /// Every reap step for a workload nothing has been done to yet (research R6):
 /// record, block Flux, scale, mark.
 fn reap_actions(snap: &Snapshot, w: &WorkloadView) -> Vec<Action> {
@@ -261,12 +454,7 @@ fn reap_actions(snap: &Snapshot, w: &WorkloadView) -> Vec<Action> {
         actions.push(Action::DisableKustomizeReconcile(w.workload.object_ref()));
     }
     if let Some(hr) = &w.flux.helm_release {
-        let view = snap.helm_releases.get(hr);
-        actions.push(Action::HoldHelmRelease {
-            helm_release: hr.clone(),
-            suspend: !view.is_some_and(|v| v.suspended),
-            disable_reconcile: view.is_some_and(|v| v.kustomization.is_some()),
-        });
+        actions.push(hold_action(snap, hr));
     }
     actions.push(Action::ScaleTo { replicas: 0 });
     actions.push(Action::MarkReaped);
@@ -287,7 +475,10 @@ pub fn published_plans(plan: &CyclePlan) -> BTreeMap<String, String> {
 mod tests {
     use super::*;
     use crate::model::{NsName, WorkloadRef};
-    use crate::record::{CRASHLOOP_SINCE, HEALTHY_SINCE};
+    use crate::record::{
+        CRASHLOOP_SINCE, HEALTHY_SINCE, HELMRELEASE, ORIGINAL_REPLICAS, PREVIOUS_RECONCILE,
+        PreviousReconcile, RESTORE,
+    };
     use crate::testing::{
         NOW, add_namespace, add_pod, crashlooping_container, deployment, healthy_container,
         helm_release, mins_ago, snapshot, workload,
@@ -696,5 +887,336 @@ mod tests {
         let (snap, d) = looping("web", 12, Some(60));
         let plans = published_plans(&run(snap, vec![d]));
         assert_eq!(plans.keys().collect::<Vec<_>>(), ["Deployment/app/web"]);
+    }
+
+    // US2: limits, resume, Flux (T040)
+
+    fn reap_of(p: &CyclePlan, name: &str) -> Plan {
+        p.decisions
+            .iter()
+            .find(|d| d.workload.name == name)
+            .map_or_else(|| panic!("{name} not decided"), |d| d.plan.clone())
+    }
+
+    fn skip_of(plan: &Plan) -> Option<SkipReason> {
+        match plan {
+            Plan::Skip { reason, .. } => Some(*reason),
+            _ => None,
+        }
+    }
+
+    /// A workload the reaper holds: `state` label, 3 original replicas.
+    fn held(name: &str, state: &str, replicas: u32) -> WorkloadView {
+        let mut d = deployment("app", name);
+        d.state_label = Some(state.into());
+        d.spec_replicas = Some(replicas);
+        d.reaper_annotations
+            .insert(CRASHLOOP_SINCE.into(), mins_ago(90).to_string());
+        d.reaper_annotations
+            .insert(ORIGINAL_REPLICAS.into(), "3".into());
+        d
+    }
+
+    fn add_looping(snap: &mut Snapshot, name: &str, minutes: i64) -> WorkloadView {
+        let (one, d) = looping(name, 20, Some(minutes));
+        snap.pods.extend(one.pods);
+        snap.replica_sets.extend(one.replica_sets);
+        d
+    }
+
+    #[test]
+    fn one_new_reap_per_cycle_longest_looping_first() {
+        let mut snap = snapshot();
+        let ws = vec![
+            add_looping(&mut snap, "b", 40),
+            add_looping(&mut snap, "c", 90),
+            add_looping(&mut snap, "a", 40),
+        ];
+        let p = run(snap, ws);
+        let order: Vec<_> = p
+            .decisions
+            .iter()
+            .map(|d| d.workload.name.as_str())
+            .collect();
+        assert_eq!(order, ["c", "a", "b"]);
+        assert!(matches!(reap_of(&p, "c"), Plan::Reap { .. }));
+        assert_eq!(skip_of(&reap_of(&p, "a")), Some(SkipReason::RateLimited));
+        assert_eq!(skip_of(&reap_of(&p, "b")), Some(SkipReason::RateLimited));
+        // `would` is kept for the report.
+        let Plan::Skip { would, .. } = reap_of(&p, "b") else {
+            unreachable!()
+        };
+        assert_eq!(would.last(), Some(&Action::MarkReaped));
+    }
+
+    #[test]
+    fn ceiling_counts_reaping_and_reaped() {
+        let mut snap = snapshot();
+        let mut config = Config::default();
+        config.limits.max_reaps_per_cycle = 5;
+        config.limits.max_reaped = 2;
+        snap.workloads = vec![
+            held("old", "reaped", 0),
+            add_looping(&mut snap, "x", 60),
+            add_looping(&mut snap, "y", 50),
+        ];
+        let p = decide(&snap, &config);
+        assert!(matches!(reap_of(&p, "x"), Plan::Reap { .. }));
+        assert_eq!(
+            skip_of(&reap_of(&p, "y")),
+            Some(SkipReason::ReapCeilingReached)
+        );
+    }
+
+    #[test]
+    fn zero_per_cycle_reports_everything() {
+        let mut snap = snapshot();
+        let mut config = Config::default();
+        config.limits.max_reaps_per_cycle = 0;
+        snap.workloads = vec![add_looping(&mut snap, "x", 60)];
+        let p = decide(&snap, &config);
+        assert_eq!(skip_of(&reap_of(&p, "x")), Some(SkipReason::RateLimited));
+    }
+
+    #[test]
+    fn interrupted_reap_resumes_past_the_limits() {
+        let mut snap = snapshot();
+        let mut config = Config::default();
+        config.limits.max_reaped = 0;
+        let mut w = held("web", "reaping", 3);
+        w.flux.kustomization = Some(NsName::new("flux-system", "apps"));
+        w.flux.reconcile_annotation = Some("disabled".into());
+        snap.workloads = vec![w];
+        let p = decide(&snap, &config);
+        // Replicas > 0 while reaping is the reap continuing, not a restore.
+        assert_eq!(
+            reap_of(&p, "web"),
+            Plan::Reap {
+                actions: vec![Action::ScaleTo { replicas: 0 }, Action::MarkReaped]
+            }
+        );
+
+        snap.workloads[0].spec_replicas = Some(0);
+        let p = decide(&snap, &config);
+        assert_eq!(
+            reap_of(&p, "web"),
+            Plan::Reap {
+                actions: vec![Action::MarkReaped]
+            }
+        );
+    }
+
+    #[test]
+    fn interrupted_reap_places_a_missing_hold() {
+        let mut snap = snapshot();
+        let mut w = held("web", "reaping", 3);
+        w.flux.helm_release = Some(NsName::new("helm", "web"));
+        snap.helm_releases
+            .insert(NsName::new("helm", "web"), helm_release("helm", "web"));
+        snap.workloads = vec![w];
+        let Plan::Reap { actions } = reap_of(&run(snap.clone(), snap.workloads.clone()), "web")
+        else {
+            panic!()
+        };
+        assert_eq!(
+            actions[0],
+            Action::HoldHelmRelease {
+                helm_release: NsName::new("helm", "web"),
+                suspend: true,
+                disable_reconcile: false,
+            }
+        );
+    }
+
+    #[test]
+    fn flux_toggle_off_is_report_only() {
+        let (snap, mut d) = looping("web", 12, Some(60));
+        d.flux.helm_release = Some(NsName::new("helm", "web"));
+        let mut config = Config::default();
+        config.flux.helm_release = false;
+        let mut snap = snap;
+        snap.workloads = vec![d];
+        let p = decide(&snap, &config);
+        assert_eq!(skip_of(&only(&p).plan), Some(SkipReason::ReportOnlyScope));
+    }
+
+    #[test]
+    fn a_release_another_workload_holds_is_not_suspended_again() {
+        let (mut snap, mut d) = looping("web", 12, Some(60));
+        d.flux.helm_release = Some(NsName::new("helm", "app"));
+        let mut hr = helm_release("helm", "app");
+        hr.suspended = true;
+        hr.reaper_annotations.insert(
+            crate::record::HELD_FOR.into(),
+            r#"["StatefulSet/helm/db"]"#.into(),
+        );
+        hr.reaper_annotations
+            .insert(crate::record::SUSPENDED_BY_REAPER.into(), "true".into());
+        snap.helm_releases.insert(hr.helm_release.clone(), hr);
+        let p = run(snap, vec![d]);
+        let Plan::Reap { actions } = &only(&p).plan else {
+            panic!()
+        };
+        assert_eq!(
+            actions[1],
+            Action::HoldHelmRelease {
+                helm_release: NsName::new("helm", "app"),
+                suspend: false,
+                disable_reconcile: false,
+            }
+        );
+    }
+
+    // US3: restore (T050)
+
+    fn restore_of(p: &CyclePlan, name: &str) -> (RestoreKind, Vec<Action>) {
+        match reap_of(p, name) {
+            Plan::Restore { kind, actions } => (kind, actions),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn reaped_and_unchanged_is_held() {
+        let snap = snapshot();
+        assert_eq!(
+            reap_of(&run(snap, vec![held("web", "reaped", 0)]), "web"),
+            Plan::Held
+        );
+    }
+
+    #[test]
+    fn restore_annotation_scales_back_and_clears() {
+        let mut w = held("web", "reaped", 0);
+        w.reaper_annotations.insert(RESTORE.into(), "yes".into());
+        w.reaper_annotations
+            .insert(PREVIOUS_RECONCILE.into(), "<none>".into());
+        let (kind, actions) = restore_of(&run(snapshot(), vec![w]), "web");
+        assert_eq!(kind, RestoreKind::Requested);
+        assert_eq!(
+            actions,
+            [
+                Action::ScaleTo { replicas: 3 },
+                Action::ClearReaperState {
+                    restore_reconcile: Some(PreviousReconcile::Absent)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn manual_scale_up_keeps_the_persons_replicas() {
+        let (kind, actions) = restore_of(&run(snapshot(), vec![held("web", "reaped", 5)]), "web");
+        assert_eq!(kind, RestoreKind::ManualScaleUp);
+        assert_eq!(
+            actions,
+            [Action::ClearReaperState {
+                restore_reconcile: None
+            }]
+        );
+    }
+
+    #[test]
+    fn restore_interrupted_after_scaling_just_finishes() {
+        let mut w = held("web", "reaped", 3);
+        w.reaper_annotations.insert(RESTORE.into(), "1".into());
+        let (_, actions) = restore_of(&run(snapshot(), vec![w]), "web");
+        assert_eq!(
+            actions,
+            [Action::ClearReaperState {
+                restore_reconcile: None
+            }]
+        );
+    }
+
+    #[test]
+    fn mode_off_on_a_reaped_workload_restores_it() {
+        let mut w = held("web", "reaped", 0);
+        w.mode_label = Some("off".into());
+        let (kind, _) = restore_of(&run(snapshot(), vec![w]), "web");
+        assert_eq!(kind, RestoreKind::OptedOut);
+    }
+
+    #[test]
+    fn restore_on_a_workload_not_reaped_is_ignored() {
+        let (snap, mut d) = looping("web", 12, Some(60));
+        d.reaper_annotations.insert(RESTORE.into(), "1".into());
+        assert_eq!(only(&run(snap, vec![d])).plan, Plan::RestoreIgnored);
+    }
+
+    #[test]
+    fn shared_release_is_only_resumed_by_the_last_restore() {
+        let mut snap = snapshot();
+        let mut hr = helm_release("helm", "app");
+        hr.suspended = true;
+        hr.reaper_annotations.insert(
+            crate::record::HELD_FOR.into(),
+            r#"["Deployment/app/db","Deployment/app/web"]"#.into(),
+        );
+        hr.reaper_annotations
+            .insert(crate::record::SUSPENDED_BY_REAPER.into(), "true".into());
+        hr.reaper_annotations
+            .insert(PREVIOUS_RECONCILE.into(), "enabled".into());
+        snap.helm_releases.insert(hr.helm_release.clone(), hr);
+        let mut web = held("web", "reaped", 0);
+        web.reaper_annotations.insert(RESTORE.into(), "1".into());
+        web.reaper_annotations
+            .insert(HELMRELEASE.into(), "helm/app".into());
+        let db = held("db", "reaped", 0);
+        snap.workloads = vec![web, db];
+        let p = decide(&snap, &Config::default());
+        let (_, actions) = restore_of(&p, "web");
+        assert_eq!(
+            actions[0],
+            Action::ReleaseHelmRelease {
+                helm_release: NsName::new("helm", "app"),
+                resume: false,
+                restore_reconcile: None,
+            }
+        );
+
+        // Once db is the only one left, its restore resumes the release.
+        let hr = snap
+            .helm_releases
+            .get_mut(&NsName::new("helm", "app"))
+            .unwrap();
+        hr.reaper_annotations.insert(
+            crate::record::HELD_FOR.into(),
+            r#"["Deployment/app/db"]"#.into(),
+        );
+        snap.workloads[1]
+            .reaper_annotations
+            .insert(RESTORE.into(), "1".into());
+        snap.workloads[1]
+            .reaper_annotations
+            .insert(HELMRELEASE.into(), "helm/app".into());
+        let (_, actions) = restore_of(&decide(&snap, &Config::default()), "db");
+        assert_eq!(
+            actions[0],
+            Action::ReleaseHelmRelease {
+                helm_release: NsName::new("helm", "app"),
+                resume: true,
+                restore_reconcile: Some(PreviousReconcile::Value("enabled".into())),
+            }
+        );
+    }
+
+    #[test]
+    fn holds_for_missing_or_unheld_workloads_are_stale() {
+        let mut snap = snapshot();
+        let mut hr = helm_release("helm", "app");
+        hr.reaper_annotations.insert(
+            crate::record::HELD_FOR.into(),
+            r#"["Deployment/app/gone","Deployment/app/held","Deployment/app/recreated"]"#.into(),
+        );
+        snap.helm_releases.insert(hr.helm_release.clone(), hr);
+        snap.workloads = vec![held("held", "reaped", 0), deployment("app", "recreated")];
+        let p = decide(&snap, &Config::default());
+        let stale: Vec<_> = p
+            .stale_holds
+            .iter()
+            .map(|s| s.workload.name.as_str())
+            .collect();
+        assert_eq!(stale, ["gone", "recreated"]);
     }
 }
