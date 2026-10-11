@@ -185,15 +185,13 @@ The skip reasons in a `ReapSkipped` note:
 
 | Skip reason           | Why the reaper will not act |
 | --------------------- | --------------------------- |
-| `OptedOut`            | The workload or its namespace opted out. |
 | `ReportOnlyScope`     | A `reaper.boop.ninja/mode=report` label or annotation applies. |
 | `CannotScaleToZero`   | A DaemonSet. DaemonSets are always report-only. |
-| `UnsupportedOwner`    | The pod's owner is a kind the reaper does not handle. |
 | `ManagedByController` | Another controller owns the workload, for example a database operator. |
 | `ManagedByAutoscaler` | An autoscaler, such as a KEDA ScaledObject, would fight the scale-down. |
 | `PartiallyAvailable`  | At least one replica is still available, for example during a bad rollout. |
-| `RateLimited`         | Full mode only: the per-cycle limit was reached. Retried next cycle. |
-| `ReapCeilingReached`  | Full mode only: the limit of workloads reaped at once was reached. |
+| `RateLimited`         | `maxReapsPerCycle` was already used this cycle by a workload that has crash-looped longer. Retried next cycle. Applies in report mode too. |
+| `ReapCeilingReached`  | `maxReaped` workloads are already reaped (or would be, in report mode). Waits until one is restored. |
 
 ### 4.3 Annotations on the workload
 
@@ -217,7 +215,7 @@ kubectl get deploy -n shop api -o jsonpath='{.metadata.annotations.reaper\.boop\
 ```
 
 ```json
-{"actions":[{"scaleTo":{"replicas":0}},{"disableKustomizeReconcile":"Deployment/shop/api"}]}
+{"actions":[{"recordReap":{"originalReplicas":1}},{"disableKustomizeReconcile":"Deployment/shop/api"},{"scaleTo":{"replicas":0}},"markReaped"]}
 ```
 
 A skipped candidate shows the skip reason and what it would have done:
@@ -316,8 +314,9 @@ kubectl patch reaperconfig default --type merge -p '{"spec":{"mode":"full"}}'
 ```
 
 If the chart manages `ReaperConfig/default`, set
-`reaperConfig.spec.mode: full` in the HelmRelease values in Git instead, or
-Flux will put `report` back.
+`reaperConfig.spec.mode: full` in the HelmRelease values in Git instead. A
+`kubectl patch` holds only until the next Helm upgrade, which puts `report`
+back.
 
 The change takes effect on the next cycle, with no restart. Check it:
 
