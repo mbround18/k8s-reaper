@@ -11,12 +11,13 @@ are exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (OTel names use
 | `reaper_workload_crashloop_seconds`     | gauge     | `namespace`, `kind`, `name`              | `now - crashloop-since` (`now - failing-since` for a CronJob)                           |
 | `reaper_actions_total`                  | counter   | `action`, `result`, `mode`               | `action` ∈ `reap`, `restore`, `scale`, `kustomize_disable`, `kustomize_restore`, `helmrelease_hold`, `helmrelease_release`, `cronjob_suspend`, `cronjob_resume`; `result` ∈ `success`, `error`, `planned` (report mode) |
 | `reaper_cycles_total`                   | counter   | `result`                                 | `ok`, `error`                                                                           |
-| `reaper_cycle_duration_seconds`         | histogram | none                                     | decide + execute time                                                                   |
+| `reaper_cycle_duration_seconds`         | histogram | none                                     | decide + execute time; unit `seconds` (`# UNIT`), 12 exponential buckets from 0.05 s (×2, up to 102.4 s) |
 | `reaper_last_cycle_timestamp_seconds`   | gauge     | none                                     | Unix time the last cycle finished                                                       |
 | `reaper_config_info`                    | gauge     | `mode`, `generation`                     | 1 for the active config                                                                 |
 | `reaper_config_valid`                   | gauge     | none                                     | 1 if the latest ReaperConfig generation is valid, else 0                                |
 | `reaper_notifications_total`            | counter   | `channel`, `provider`, `result`          | US6; see [notifications.md](./notifications.md)                                        |
 | `reaper_notification_channels`          | gauge     | `channel`, `provider`, `valid`           | US6; 1 per channel read in the last cycle                                               |
+| `reaper_unowned_crashlooping_pods`      | gauge     | `namespace`                              | Crash-looping pods with no supported owner (bare pods, unhandled owner kinds); the series is removed when the count drops to 0 |
 | `reaper_build_info`                     | gauge     | `version`, `git_sha`                     | 1                                                                                       |
 
 Cardinality: bounded by the number of workloads in a non-`none` state, a few

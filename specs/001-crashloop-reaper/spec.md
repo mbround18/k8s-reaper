@@ -314,6 +314,10 @@ messages without a restart.
   target at 0). Restore sets the recorded replicas and the HPA resumes. A KEDA
   ScaledObject or another autoscaler that would fight the scale-down makes the
   workload report-only (`ManagedByAutoscaler`).
+- **Crash-looping pod with no supported owner** (a bare pod, or one owned by
+  a kind the reaper does not handle): never acted on and never given a state.
+  It is logged and counted in `reaper_unowned_crashlooping_pods{namespace}`;
+  no Event is recorded (owner decision, 2026-10-10).
 - **Workload owned by another controller** (the Deployment or StatefulSet has a
   controller ownerReference, as with operator-managed databases): report-only
   (`ManagedByController`). Acting would race that controller.
@@ -658,6 +662,10 @@ The details below were filled in by default, and the owner can change them:
 taken to mean per-workload threshold overrides (FR-034, US4 scenario 6). They
 are annotations a team sets on its own workload, and they can only raise
 thresholds. Global settings stay in `ReaperConfig`.
+
+**Confirmed** (2026-10-10): overrides can only raise thresholds. The
+effective threshold is the larger of the override and the global value
+(FR-034), so an override below the global value has no effect.
 
 ### Question 6: Notifications
 

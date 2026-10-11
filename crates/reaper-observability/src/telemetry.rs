@@ -5,7 +5,7 @@
 //! unless one is installed. Their names are the Prometheus names with `.` for
 //! `_` and no `_total`.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,8 +19,9 @@ use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::{Histogram, exponential_buckets};
-use prometheus_client::registry::Registry;
+use prometheus_client::registry::{Registry, Unit};
 use reaper_core::config::Mode;
+use reaper_core::plan::UnsupportedPod;
 use reaper_core::ports::{ActionKind, ActionResult, Telemetry, WorkloadRow};
 
 const METER: &str = "k8s-reaper";
@@ -95,6 +96,11 @@ struct ChannelLabels {
     channel: String,
     provider: String,
     valid: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct NamespaceLabels {
+    namespace: String,
 }
 
 /// One channel file read in the last cycle: name, provider, valid.
@@ -175,12 +181,14 @@ struct Otel {
     config_valid: OtelGauge<u64>,
     notifications: OtelCounter<u64>,
     _notification_channels: ObservableGauge<u64>,
+    _unowned_pods: ObservableGauge<u64>,
 }
 
 impl Otel {
     fn new(
         rows: &Arc<Mutex<Vec<WorkloadRow>>>,
         channels: &Arc<Mutex<Vec<ChannelRow>>>,
+        unowned: &Arc<Mutex<BTreeMap<String, u64>>>,
         version: &str,
         git_sha: &str,
     ) -> Self {
@@ -236,6 +244,15 @@ impl Otel {
                 }
             })
             .build();
+        let u = Arc::clone(unowned);
+        let unowned_pods = meter
+            .u64_observable_gauge("reaper.unowned.crashlooping.pods")
+            .with_callback(move |o| {
+                for (namespace, count) in lock(&u).iter() {
+                    o.observe(*count, &[KeyValue::new("namespace", namespace.clone())]);
+                }
+            })
+            .build();
         meter.u64_gauge("reaper.build.info").build().record(
             1,
             &[
@@ -261,6 +278,7 @@ impl Otel {
             config_valid: meter.u64_gauge("reaper.config.valid").build(),
             notifications: meter.u64_counter("reaper.notifications").build(),
             _notification_channels: notification_channels,
+            _unowned_pods: unowned_pods,
         }
     }
 }
@@ -280,6 +298,9 @@ pub struct Metrics {
     notification_channels: Family<ChannelLabels, Gauge>,
     /// The last `notification_channels` rows, read by the `OTel` callback.
     channels: Arc<Mutex<Vec<ChannelRow>>>,
+    unowned_pods: Family<NamespaceLabels, Gauge>,
+    /// The last `unowned_pods` counts, read by the `OTel` callback.
+    unowned: Arc<Mutex<BTreeMap<String, u64>>>,
     /// Label sets emitted by the last `workloads` call.
     emitted: Mutex<Emitted>,
     /// The last `workloads` rows, read by the `OTel` callbacks.
@@ -292,6 +313,7 @@ impl Metrics {
     pub fn register(registry: &mut Registry, version: &str, git_sha: &str) -> Self {
         let rows = Arc::new(Mutex::new(Vec::new()));
         let channels = Arc::new(Mutex::new(Vec::new()));
+        let unowned = Arc::new(Mutex::new(BTreeMap::new()));
         let metrics = Metrics {
             workload_state: Family::default(),
             workload_skipped: Family::default(),
@@ -305,9 +327,11 @@ impl Metrics {
             notifications: Family::default(),
             notification_channels: Family::default(),
             emitted: Mutex::default(),
-            otel: Otel::new(&rows, &channels, version, git_sha),
+            unowned_pods: Family::default(),
+            otel: Otel::new(&rows, &channels, &unowned, version, git_sha),
             rows,
             channels,
+            unowned,
         };
         let build_info = Family::<BuildLabels, Gauge>::default();
         build_info
@@ -338,9 +362,10 @@ impl Metrics {
             metrics.actions.clone(),
         );
         registry.register("reaper_cycles", "Reconcile cycles", metrics.cycles.clone());
-        registry.register(
-            "reaper_cycle_duration_seconds",
+        registry.register_with_unit(
+            "reaper_cycle_duration",
             "Decide and execute time per cycle",
+            Unit::Seconds,
             metrics.cycle_duration.clone(),
         );
         registry.register(
@@ -367,6 +392,11 @@ impl Metrics {
             "reaper_notification_channels",
             "1 per channel file read in the last cycle",
             metrics.notification_channels.clone(),
+        );
+        registry.register(
+            "reaper_unowned_crashlooping_pods",
+            "Crash-looping pods with no supported owner, by namespace",
+            metrics.unowned_pods.clone(),
         );
         registry.register("reaper_build_info", "Build version", build_info);
         metrics
@@ -450,6 +480,24 @@ impl Metrics {
                 .set(1);
         }
         *lock(&self.channels) = rows.to_vec();
+    }
+
+    /// Replaces `reaper_unowned_crashlooping_pods` with this cycle's counts; a
+    /// namespace with none left loses its series.
+    pub fn unowned_pods(&self, pods: &[UnsupportedPod]) {
+        let mut counts = BTreeMap::new();
+        for pod in pods {
+            *counts.entry(pod.namespace.clone()).or_insert(0_u64) += 1;
+        }
+        self.unowned_pods.clear();
+        for (namespace, count) in &counts {
+            self.unowned_pods
+                .get_or_create(&NamespaceLabels {
+                    namespace: namespace.clone(),
+                })
+                .set(i64::try_from(*count).unwrap_or(i64::MAX));
+        }
+        *lock(&self.unowned) = counts;
     }
 }
 
@@ -549,6 +597,7 @@ mod tests {
             "gauge",
             &["channel", "provider", "valid"],
         ),
+        ("reaper_unowned_crashlooping_pods", "gauge", &["namespace"]),
         ("reaper_build_info", "gauge", &["version", "git_sha"]),
     ];
 
@@ -665,9 +714,40 @@ mod tests {
         metrics.config_valid(true);
         metrics.notification("ops-discord", "discord", "sent");
         metrics.notification_channels(&[("ops-discord".into(), "discord".into(), true)]);
+        metrics.unowned_pods(&[unowned("apps", "bare")]);
 
         let body = encode(&registry);
         assert_eq!(shape(&body), contract(), "{body}");
+        assert!(
+            body.contains("# UNIT reaper_cycle_duration_seconds seconds"),
+            "{body}"
+        );
+    }
+
+    fn unowned(namespace: &str, pod: &str) -> UnsupportedPod {
+        UnsupportedPod {
+            namespace: namespace.to_owned(),
+            pod: pod.to_owned(),
+            owner_kind: None,
+        }
+    }
+
+    #[test]
+    fn unowned_pods_are_counted_per_namespace_and_cleared() {
+        let (registry, metrics) = metrics();
+        metrics.unowned_pods(&[
+            unowned("apps", "a"),
+            unowned("apps", "b"),
+            unowned("jobs", "c"),
+        ]);
+        let body = encode(&registry);
+        assert!(body.contains(r#"reaper_unowned_crashlooping_pods{namespace="apps"} 2"#));
+        assert!(body.contains(r#"reaper_unowned_crashlooping_pods{namespace="jobs"} 1"#));
+
+        metrics.unowned_pods(&[unowned("apps", "a")]);
+        let body = encode(&registry);
+        assert!(body.contains(r#"reaper_unowned_crashlooping_pods{namespace="apps"} 1"#));
+        assert!(!body.contains(r#"namespace="jobs""#), "{body}");
     }
 
     #[test]

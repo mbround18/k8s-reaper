@@ -106,6 +106,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         let snap = caches.snapshot(now());
         let plan = decide(&snap, &config);
         log_plan(&plan);
+        metrics.unowned_pods(&plan.unsupported);
         let mut outcome = execute(&snap, &plan, config.mode, &writer, &events, &*metrics).await;
         log_outcome(&outcome);
 

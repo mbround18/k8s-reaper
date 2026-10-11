@@ -253,13 +253,13 @@ with the owner's agreement and saying so in the commit.
 - [X] G06 Events carry no `regarding.uid`, so `kubectl describe` may not attach them; Events about cluster-scoped objects (ReaperConfig) land in `default`. Fill the uid from the snapshot and put cluster-scoped Events in the reaper's own namespace (contracts/events.md). Done: uid filled from the watch caches (CronJob and ReaperConfig have none until those are cached). The namespace half is not possible: the API server rejects an events.k8s.io/v1 Event about a cluster-scoped object in any namespace but `default` or `kube-system` ("involvedObject.namespace: does not match event.namespace", verified by server dry-run on kind 2026-10-10), so those stay in `default`
 - [X] G07 `scale` has no `resourceVersion` precondition, unlike metadata patches. Add one, with a writer contract test (needed before T044 full mode). The scale merge patch now carries `metadata.resourceVersion`; a 409 maps to `Conflict`
 - [X] G08 The reaper-flux `HelmRelease` type is minimal (enough for the snapshot). Reconcile it with T045 rather than writing a second one
-- [ ] G09 Crash-looping pods with no supported owner are only logged. Decide with the owner whether they get a metric or Event (spec.md is silent); record the decision in spec.md Edge Cases
+- [X] G09 Crash-looping pods with no supported owner are only logged. Decide with the owner whether they get a metric or Event (spec.md is silent); record the decision in spec.md Edge Cases — owner chose a metric only: `reaper_unowned_crashlooping_pods{namespace}`
 
 ### Runtime and observability
 
 - [X] G10 OTel metrics: enable the SDK/OTLP `metrics` features and install a global meter provider in `main`, so the meters mirrored in telemetry.rs are actually exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (contracts/metrics.md)
 - [X] G11 `/readyz` must fail when the last cycle is older than 3× the interval (contracts/config.md HTTP); today readiness is set once after the first cycle
-- [ ] G12 Confirm `reaper_cycle_duration_seconds` bucket boundaries and whether the metric family should declare a unit; record in contracts/metrics.md
+- [X] G12 Confirm `reaper_cycle_duration_seconds` bucket boundaries and whether the metric family should declare a unit; record in contracts/metrics.md — buckets kept, unit `seconds` declared
 - [X] G13 Cycles run on a timer only; watch-triggered cycles are T054. Until then, document that reaction time is up to one `cycleInterval`
 - [ ] G14 ReaperConfig status, conditions and `ConfigInvalid`/`ConfigApplied` Events are not written until T062/T063; an invalid config is only logged and shown in `reaper_config_valid`
 
@@ -267,7 +267,7 @@ with the owner's agreement and saying so in the commit.
 
 - [X] G15 Full mode is gated in the executor until T044; a `Reaping` state currently plans nothing (`Plan::Nothing`) until US2/US3 — closed by T043/T044/T052
 - [X] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet. `us1_report` and `us6_notify` pass on kind (`make dev-kind … KUBE_CONTEXT=kind-fathom-dev`); later stories add their own
-- [ ] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
+- [X] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
 
 ## Dependencies
 
