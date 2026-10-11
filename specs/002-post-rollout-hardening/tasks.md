@@ -205,7 +205,7 @@ a guarded `ReaperDown` and a regenerable CRD.
   - `README.md` Install: add a Flux `HelmRepository` (`https://mbround18.github.io/helm-charts/`) plus `HelmRelease` with `chart: k8s-reaper` and `version: 0.1.x`, and a plain `helm repo add mbround18 … && helm install k8s-reaper mbround18/k8s-reaper -n k8s-reaper --create-namespace`. Keep the GitRepository form;
   - `docs/guides/helm-chart.md`: a new "Install from the Helm repository" section with both forms; a note that the `argocd.argoproj.io/sync-wave` annotations are the chart repository's Argo CD convention and inert under Flux; and that `ReaperDown` fires when the ServiceMonitor is enabled but not selected by Prometheus (spec edge case);
   - `docs/guides/getting-started.md`: point at the new section.
-- [ ] T147 [US5] Chart PR in the worktree `/home/mbruno/development/helm-charts-k8s-reaper`, on a new branch `fix/k8s-reaper-hardening` from `origin/main`:
+- [X] T147 [US5] (committed aca6b30 on fix/k8s-reaper-hardening, not pushed) Chart PR in the worktree `/home/mbruno/development/helm-charts-k8s-reaper`, on a new branch `fix/k8s-reaper-hardening` from `origin/main`:
   - `charts/k8s-reaper/values.yaml`: `resources.requests.memory: 64Mi`, limit `128Mi`;
   - `templates/prometheusrule.yaml`: wrap the `ReaperDown` rule in `{{- if .Values.serviceMonitor.enabled }}`;
   - regenerate `crds/` from T145's output;
