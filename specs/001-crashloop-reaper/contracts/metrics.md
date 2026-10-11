@@ -15,6 +15,8 @@ are exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (OTel names use
 | `reaper_last_cycle_timestamp_seconds`   | gauge     | none                                     | Unix time the last cycle finished                                                       |
 | `reaper_config_info`                    | gauge     | `mode`, `generation`                     | 1 for the active config                                                                 |
 | `reaper_config_valid`                   | gauge     | none                                     | 1 if the latest ReaperConfig generation is valid, else 0                                |
+| `reaper_notifications_total`            | counter   | `channel`, `provider`, `result`          | US6; see [notifications.md](./notifications.md)                                        |
+| `reaper_notification_channels`          | gauge     | `channel`, `provider`, `valid`           | US6; 1 per channel read in the last cycle                                               |
 | `reaper_build_info`                     | gauge     | `version`, `git_sha`                     | 1                                                                                       |
 
 Cardinality: bounded by the number of workloads in a non-`none` state, a few

@@ -253,6 +253,45 @@ after about 10 minutes and nothing changes. In full mode it gets
    run, **Then** CronJobs are not observed. CronJobs that are already paused
    can still be restored.
 
+### User Story 6 - Hear about reaps in chat or mail (Priority: P3)
+
+As the cluster operator, I want the reaper to tell a Discord channel, another
+webhook, or a mailbox when it plans, performs or fails a reap or restore, so I
+do not have to watch Events or dashboards to notice it acted.
+
+**Why this priority**: Events, metrics and alerts already make every action
+visible (US1). Notifications only shorten the time until a person notices. The
+reaper must work the same with none configured.
+
+**Independent Test**: In a dev cluster, create the Secret
+`k8s-reaper-notifications` with one key holding a webhook URL pointing at a
+local echo server, and one `smtp://` URL pointing at a local mail catcher. Run
+the US1 fixtures in report mode. Each receives one `ReapPlanned` message per
+candidate, and nothing repeats on later cycles. Deleting the Secret stops the
+messages without a restart.
+
+**Acceptance Scenarios**:
+
+1. **Given** no notifications Secret is mounted, **When** cycles run, **Then**
+   the reaper makes no outbound connection and behaves exactly as in US1–US5.
+2. **Given** a mounted Secret key holding a Discord webhook URL, **When** a
+   workload becomes a candidate in report mode, **Then** the channel receives
+   one Discord message naming the workload, the reason, the crash-loop start
+   and what full mode would do.
+3. **Given** a key holding an `smtp://` or `smtps://` URL with `from` and `to`,
+   **When** a notified transition happens, **Then** one plain-text mail is sent
+   to every `to` address.
+4. **Given** any other HTTPS URL, **When** a notified transition happens,
+   **Then** it receives the documented generic JSON payload.
+5. **Given** a channel that times out or returns an error, **When** a cycle
+   runs, **Then** the cycle and any reap complete on time, the message is
+   retried with backoff, and failure is counted in a metric. The URL never
+   appears in logs, Events or metrics.
+6. **Given** `notifications.reasons` and a per-channel filter in ReaperConfig,
+   **When** transitions happen, **Then** only the selected reasons are sent to
+   each channel, and a repeat for the same workload and reason inside
+   `minInterval` is dropped.
+
 ---
 
 ### Edge Cases
@@ -460,6 +499,32 @@ after about 10 minutes and nothing changes. In full mode it gets
   (`cronJobs.enabled`, default on). Turning it off stops observation but MUST
   NOT block restoring CronJobs that are already paused.
 
+**Notifications**
+
+- **FR-035**: Notification channels MUST come only from files in a mounted
+  directory (`--notifications-dir`, filled by the chart from an optional
+  Secret), one URL per file, named by the file. The reaper MUST NOT read
+  Secrets through the Kubernetes API. No directory or no files means
+  notifications are off and no outbound connection is made.
+- **FR-036**: The provider MUST be inferred from the URL: Discord webhook,
+  Slack incoming webhook, `smtp://`/`smtps://` email, otherwise generic JSON
+  webhook, with a `format` query parameter to override. Plain `http://` and
+  SMTP without TLS MUST be refused unless explicitly allowed, and reported as
+  an invalid channel.
+- **FR-037**: Notifications MUST be sent only for Event transitions
+  (contracts/events.md), filtered by `notifications.reasons` globally and per
+  channel, with the documented defaults. A repeat for the same workload and
+  reason inside `notifications.minInterval` MUST be dropped.
+- **FR-038**: Delivery MUST be best-effort and asynchronous: it MUST NOT delay
+  a cycle or block a reap or restore. It uses a bounded queue, a per-message
+  timeout and bounded retries with backoff.
+- **FR-039**: Channel URLs and credentials MUST NOT appear in logs, Events,
+  metrics, traces, status or error text.
+- **FR-040**: Every send attempt outcome MUST be counted per channel
+  (`reaper_notifications_total`).
+- **FR-041**: The channel directory and the `notifications` config block MUST
+  take effect without a restart (constitution V).
+
 ### Key Entities
 
 - **Workload**: a Deployment, StatefulSet or DaemonSet that owns crash-looping
@@ -510,6 +575,9 @@ after about 10 minutes and nothing changes. In full mode it gets
   cycles and stays suspended through 3 forced Flux reconciles. A CronJob with a
   successful run inside the window is never suspended. One restore action
   returns `spec.suspend` to `false` within 1 cycle.
+- **SC-009**: With notifications configured, each notified transition reaches
+  every matching channel once within 1 minute, and a channel that is down adds
+  no time to any cycle (US6).
 
 ## Assumptions
 
@@ -547,7 +615,7 @@ after about 10 minutes and nothing changes. In full mode it gets
 
 ## Owner Decisions
 
-All four questions were answered on 2026-10-10.
+Questions 1–5 were answered on 2026-10-10. Question 6 is open.
 
 ### Question 1: API group and annotation prefix
 
@@ -589,3 +657,24 @@ The details below were filled in by default, and the owner can change them:
 taken to mean per-workload threshold overrides (FR-034, US4 scenario 6). They
 are annotations a team sets on its own workload, and they can only raise
 thresholds. Global settings stay in `ReaperConfig`.
+
+### Question 6: Notifications (open)
+
+Asked 2026-10-10 with the request "add provisions for discord or other webhook
+providers or email if smtp is set up via secret". US6 and FR-035 to FR-041
+record a proposed design; nothing is built until these are answered.
+
+- **A. New dependencies.** Sending needs an HTTP client and an SMTP client.
+  Proposed: `reqwest` (rustls, no default features) and `lettre` (rustls,
+  tokio), in a new adapter crate `crates/reaper-notify`. The core gets a
+  `Notifier` port and stays pure. Alternative: generic webhooks only (no
+  `lettre`), with mail through a webhook-to-mail bridge.
+- **B. Secret delivery.** Proposed: the chart mounts an optional Secret as
+  files, so the ClusterRole keeps "no access to Secrets". Alternative: give
+  the reaper `get` on one named Secret in its own namespace (a Role, not a
+  ClusterRole) and read it through the API.
+- **C. Default reasons.** Proposed: `ReapPlanned`, `Reaped`, `ReapFailed`,
+  `Restored`, `RestoreFailed`, `HelmReleaseHeld`, `ConfigInvalid`. Is
+  `ReapPlanned` too noisy while the whole cluster runs in report mode?
+- **D. Providers.** Discord, Slack-compatible, generic JSON and SMTP. Others
+  (Teams, ntfy, Telegram, PagerDuty) can come later as `format=` values.

@@ -55,7 +55,7 @@ and a `plan` annotation. No replicas or Flux object changes.
   - DaemonSet → `CannotScaleToZero`; `PartiallyAvailable`; `ManagedByController`; `ManagedByAutoscaler` (KEDA);
   - excluded namespace, own namespace, `includeNamespaces` globs → nothing.
 - [X] T022 [P] [US1] Dry-run-equivalence harness in `crates/reaper-core/tests/equivalence.rs` (SC-004). For every fixture in the decide tests, it runs the executor with fake ports in `Report` and `Full` and asserts identical published plan JSON. In `Report`, the fake `ClusterWriter` must receive only `reaper.boop.ninja/*` annotation/label writes (FR-012).
-- [ ] T023 [P] [US1] Snapshot-mapping contract tests in `crates/reaper-kube/tests/snapshot.rs`. They use JSON fixtures in `crates/reaper-kube/tests/fixtures/` taken from scrubbed live shapes (slam-prod Deployment/ReplicaSet/Pod, fathom-dev crashloop, Job pod, ImagePullBackOff pod).
+- [X] T023 [P] [US1] Snapshot-mapping contract tests in `crates/reaper-kube/tests/snapshot.rs`. They use JSON fixtures in `crates/reaper-kube/tests/fixtures/` taken from scrubbed live shapes (slam-prod Deployment/ReplicaSet/Pod, fathom-dev crashloop, Job pod, ImagePullBackOff pod).
 - [X] T024 [P] [US1] Writer contract test in `crates/reaper-kube/tests/writer.rs` using a `tower-test` mock. Annotation/label merge patches carry a `resourceVersion` precondition and field manager `k8s-reaper`.
 
 ### Implementation
@@ -63,7 +63,7 @@ and a `plan` annotation. No replicas or Flux object changes.
 - [X] T025 [US1] Implement container classification and owner resolution in `crates/reaper-core/src/detect.rs`
 - [X] T026 [US1] Implement `decide()` for the observe/candidate/recover/skip paths. Ordering is deterministic (longest crash-looping first, then namespace/name), and the `would` actions are computed for every candidate (scale, kustomize, HelmRelease per FluxRefs and `flux.*` toggles, FR-027). Code goes in `crates/reaper-core/src/decide.rs`.
 - [X] T027 [US1] Implement the executor's report path in `crates/reaper-core/src/executor.rs`: publish the plan annotation, state label, transition Events and telemetry; the mode gate stops before any `Action` that is not a reaper-annotation write
-- [ ] T028 [US1] Implement reflectors and snapshot building in `crates/reaper-kube/src/snapshot.rs`:
+- [X] T028 [US1] Implement reflectors and snapshot building in `crates/reaper-kube/src/snapshot.rs`:
   - Pods, ReplicaSets, Deployments, StatefulSets, DaemonSets, Namespaces, HPAs;
   - KEDA ScaledObjects only if the CRD is discovered;
   - HelmReleases via the Flux adapter type;
@@ -206,6 +206,69 @@ thresholds; SC-008.
 - [ ] T076 Chart PR in `mbround18/helm-charts` (`charts/k8s-reaper`): CRD from `k8s-reaper crd`, Deployment (Recreate, 1 replica, non-root, read-only fs), RBAC per contracts/config.md, Service, ServiceMonitor, PrometheusRule per contracts/metrics.md, `ReaperConfig/default` from values (`mode: report`). (Outside this repo.)
 - [ ] T077 Fluxified overlay `overlays/services/k8s-reaper/` (namespace, HelmRelease → `charts/k8s-reaper`), then `uv run invoke build test`; deploy in report mode and check SC-006. (Outside this repo, after T076 is merged to the chart repo's `main`.)
 
+## Phase 9: User Story 6 — notifications to Discord, webhooks and mail (P3)
+
+**Goal**: optional chat/mail messages on transitions, from channel URLs in a
+mounted Secret. Off, with no outbound connection, when nothing is mounted.
+
+**Blocked on**: spec.md Question 6 (new dependencies `reqwest`/`lettre`, Secret
+mount vs RBAC, default reasons). Do not start T093+ until it is answered.
+
+**Independent test**: spec.md US6. Integration `apps/k8s-reaper/tests/us6_notify.rs`.
+
+### Tests first
+
+- [ ] T090 [P] [US6] `crates/reaper-core/src/notify.rs` tests: the `Notification` built from a transition carries reason, workload, state, mode and the Event note; reason filters (global and per channel) and `minInterval` de-duplication are pure functions of time and history (FR-037)
+- [ ] T091 [P] [US6] `crates/reaper-notify/tests/channels.rs`: URL → provider inference and `format=` override, `http://` and plain SMTP refused, `from`/`to` parsing, files starting with `.` ignored, and no error or `Debug` output that contains the URL or credentials (FR-035, FR-036, FR-039)
+- [ ] T092 [P] [US6] `crates/reaper-notify/tests/delivery.rs` against a local mock HTTP server: Discord, Slack and generic payload shapes match contracts/notifications.md; timeout, 429 `Retry-After`, non-retried 4xx, bounded retries, queue overflow drops oldest (FR-038, FR-040)
+
+### Implementation
+
+- [ ] T093 [US6] Add the `Notifier` port and `notify.rs` filtering to `reaper-core` (no new dependencies); the executor hands transitions to it after writes, alongside `EventSink`
+- [ ] T094 [US6] Add `notifications` to `ReaperConfig.spec` and core `Config` with validation (`reasons` are known Event reasons, `minInterval` 0–24h), in `crates/reaper-kube/src/crd.rs` and `crates/reaper-core/src/config.rs`
+- [ ] T095 [US6] Create adapter crate `crates/reaper-notify`: channel directory loader (re-read each cycle), Discord/Slack/generic webhook senders, SMTP sender, bounded queue worker with retry/backoff; secrets wrapped in a redacting type
+- [ ] T096 [US6] Add `reaper_notifications_total` and `reaper_notification_channels` to `crates/reaper-observability/src/telemetry.rs` and the exposition test
+- [ ] T097 [US6] Wire `--notifications-dir` / `REAPER_NOTIFICATIONS_DIR` and the worker into `apps/k8s-reaper/src/main.rs`; graceful shutdown drains the queue for at most 5 s
+- [ ] T098 [US6] Dev: echo server and mail catcher in `deploy/dev/notify/` (e.g. a small HTTP echo and Mailpit), a sample Secret using `example.test` hosts, and integration test `apps/k8s-reaper/tests/us6_notify.rs` (`#[ignore]`) for SC-009
+- [ ] T099 [P] [US6] `docs/guides/notifications.md`: creating the Secret, one example per provider, choosing reasons; and chart values (Secret name, `optional: true` mount) noted for T076
+
+**Checkpoint**: SC-009 passes on k3d.
+
+## Gaps to chase
+
+Found while building US1 (2026-10-10). Each is a known shortfall against the
+spec, contracts or quickstart. Close one by fixing it, or by changing the spec
+with the owner's agreement and saying so in the commit.
+
+### Dev setup and quickstart
+
+- [ ] G01 Run `make dev-cluster` end to end once; confirm the pinned versions exist and work together (Flux `v2.7.0`, `rancher/k3s:v1.36.5-k3s1`, `busybox:1.36.1`) and fix what does not
+- [ ] G02 Add the missing `deploy/dev/reaper.yaml` (namespace `k8s-reaper`, ServiceAccount, ClusterRole/Binding per contracts/config.md, Deployment with downward-API `REAPER_NAMESPACE`) so `make dev-run` works; note in `deploy/dev/README.md` that `helm` is now required on the host
+- [ ] G03 quickstart §1 says the dev values are "the lowest values validation allows", but `MIN_RESTARTS_RANGE` and `minFailedRuns` start at 1. Fix the sentence (or the ranges, if the owner prefers 3)
+- [ ] G04 Add the quickstart fixtures that are missing from `deploy/dev/fixtures/`: a crash-looping StatefulSet, an `ImagePullBackOff` Deployment (must not be a candidate) and a healthy control Deployment
+- [ ] G05 Make sure the CRD is applied before `make dev-cluster` waits on the dev ReaperConfig
+
+### Kubernetes adapter
+
+- [ ] G06 Events carry no `regarding.uid`, so `kubectl describe` may not attach them; Events about cluster-scoped objects (ReaperConfig) land in `default`. Fill the uid from the snapshot and put cluster-scoped Events in the reaper's own namespace (contracts/events.md)
+- [ ] G07 `scale` has no `resourceVersion` precondition, unlike metadata patches. Add one, with a writer contract test (needed before T044 full mode)
+- [ ] G08 The reaper-flux `HelmRelease` type is minimal (enough for the snapshot). Reconcile it with T045 rather than writing a second one
+- [ ] G09 Crash-looping pods with no supported owner are only logged. Decide with the owner whether they get a metric or Event (spec.md is silent); record the decision in spec.md Edge Cases
+
+### Runtime and observability
+
+- [ ] G10 OTel metrics: enable the SDK/OTLP `metrics` features and install a global meter provider in `main`, so the meters mirrored in telemetry.rs are actually exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (contracts/metrics.md)
+- [ ] G11 `/readyz` must fail when the last cycle is older than 3× the interval (contracts/config.md HTTP); today readiness is set once after the first cycle
+- [ ] G12 Confirm `reaper_cycle_duration_seconds` bucket boundaries and whether the metric family should declare a unit; record in contracts/metrics.md
+- [ ] G13 Cycles run on a timer only; watch-triggered cycles are T054. Until then, document that reaction time is up to one `cycleInterval`
+- [ ] G14 ReaperConfig status, conditions and `ConfigInvalid`/`ConfigApplied` Events are not written until T062/T063; an invalid config is only logged and shown in `reaper_config_valid`
+
+### Behaviour not yet built (tracked elsewhere, listed so nothing is assumed done)
+
+- [ ] G15 Full mode is gated in the executor until T044; a `Reaping` state currently plans nothing (`Plan::Nothing`) until US2/US3
+- [ ] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet
+- [ ] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
+
 ## Dependencies
 
 - Phase 1 → Phase 2 → US1.
@@ -215,6 +278,9 @@ thresholds; SC-008.
 - US5 needs US2 and US3 (record, holds, restore) and the US4 config plumbing
   for `cronJobs.*`.
 - Full mode must not be enabled anywhere but dev until US3 is done.
+- US6 needs US1 (transitions and Events) and the US4 config plumbing; it is
+  blocked on spec.md Question 6. It can run in parallel with US2–US5.
+- Gaps G01–G05 come before T075; G07 before T044; G06 and G10–G12 before T076.
 - T076 → T077. Both come after US3, so the deployed build can be switched to
   full mode safely later.
 

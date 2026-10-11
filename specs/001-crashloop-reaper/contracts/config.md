@@ -32,6 +32,10 @@ spec:
     enabled: true              # observe CronJobs and pause ones that keep failing
     failingDuration: 6h        # every run failed for this long (10m–7d)
     minFailedRuns: 3           # and at least this many failed runs (1–1000)
+  notifications:               # US6; channel URLs come from a mounted Secret, never from here
+    enabled: true
+    reasons: [ReapPlanned, Reaped, ReapFailed, Restored, RestoreFailed, HelmReleaseHeld, ConfigInvalid]
+    minInterval: 1h
 status:
   observedGeneration: 3
   activeGeneration: 3          # generation in use (lags observedGeneration if invalid)
@@ -57,6 +61,7 @@ renders.
 | `--namespace`           | `REAPER_NAMESPACE`            | (downward API, required) | Own namespace; always excluded            |
 | `--http-addr`           | `REAPER_HTTP_ADDR`            | `0.0.0.0:8080`       | `/healthz`, `/readyz`, `/metrics`              |
 | `--log-format`          | `REAPER_LOG_FORMAT`           | `json`               | `json` or `text`                               |
+| `--notifications-dir`   | `REAPER_NOTIFICATIONS_DIR`    | `/etc/k8s-reaper/notifications` | Mounted Secret of channel URLs (US6, [notifications.md](./notifications.md)) |
 | —                       | `RUST_LOG`                    | `info`               | Log filter                                     |
 | —                       | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (OTLP off)     | Standard OTel SDK env; also `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` |
 
@@ -94,3 +99,5 @@ DaemonSets get `patch` only for the reaper's own annotations and labels.
 CronJobs get `patch` for those and for `spec.suspend`. Jobs are never patched or
 deleted. No
 `delete`, no access to Secrets, and no `escalate`/`bind`/`impersonate`.
+Notification channel URLs reach the pod as a mounted Secret volume
+([notifications.md](./notifications.md)), which needs no RBAC.
