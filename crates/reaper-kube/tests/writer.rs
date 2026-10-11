@@ -121,6 +121,37 @@ async fn patch_metadata_sends_a_merge_patch_with_a_precondition() {
     );
 }
 
+/// The kustomize reconcile annotation is not a reaper key; it goes through the
+/// same metadata merge patch, and `null` restores an unset value (T047).
+#[tokio::test]
+async fn kustomize_reconcile_is_disabled_and_restored_by_metadata_patch() {
+    for (value, sent) in [(Some("disabled"), json!("disabled")), (None, Value::Null)] {
+        let (w, server) = writer(200, object("apps/v1", "Deployment", "43"));
+        let p = MetadataPatch {
+            annotations: BTreeMap::from([(
+                "kustomize.toolkit.fluxcd.io/reconcile".to_owned(),
+                value.map(str::to_owned),
+            )]),
+            labels: BTreeMap::new(),
+        };
+        assert_eq!(
+            w.patch_metadata(&deployment(), "42", &p).await,
+            Ok("43".to_owned())
+        );
+        let seen = server.await.unwrap();
+        assert_merge_patch(&seen, "/apis/apps/v1/namespaces/shop/deployments/web");
+        assert_eq!(
+            seen.body,
+            json!({
+                "metadata": {
+                    "resourceVersion": "42",
+                    "annotations": {"kustomize.toolkit.fluxcd.io/reconcile": sent},
+                }
+            })
+        );
+    }
+}
+
 #[tokio::test]
 async fn patch_metadata_omits_empty_label_and_annotation_maps() {
     let (w, server) = writer(200, object("v1", "Pod", "8"));

@@ -8,7 +8,7 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::batch::v1::CronJob;
 use k8s_openapi::api::core::v1::{Namespace, Pod};
 use kube::Client;
-use kube::api::{Api, ApiResource, DynamicObject, GroupVersionKind, Patch, PatchParams};
+use kube::api::{Api, ApiResource, DynamicObject, Patch, PatchParams};
 use reaper_core::model::{NsName, ObjectKind, ObjectRef, WorkloadKind, WorkloadRef};
 use reaper_core::ports::{ClusterWriter, HelmReleasePatch, WriteError};
 use reaper_core::record::MetadataPatch;
@@ -17,10 +17,6 @@ use serde_json::{Map, Value, json};
 use crate::crd::ReaperConfig;
 
 pub const FIELD_MANAGER: &str = "k8s-reaper";
-
-/// Flux `HelmRelease` coordinates.
-pub const HELM_RELEASE_GROUP: &str = "helm.toolkit.fluxcd.io";
-pub const HELM_RELEASE_VERSION: &str = "v2";
 
 /// Group, version and plural for each kind the reaper writes or reports on.
 #[must_use]
@@ -33,10 +29,7 @@ pub fn api_resource(kind: ObjectKind) -> ApiResource {
         ObjectKind::Pod => ApiResource::erase::<Pod>(&()),
         ObjectKind::Namespace => ApiResource::erase::<Namespace>(&()),
         ObjectKind::ReaperConfig => ApiResource::erase::<ReaperConfig>(&()),
-        ObjectKind::HelmRelease => ApiResource::from_gvk_with_plural(
-            &GroupVersionKind::gvk(HELM_RELEASE_GROUP, HELM_RELEASE_VERSION, "HelmRelease"),
-            "helmreleases",
-        ),
+        ObjectKind::HelmRelease => reaper_flux::helmrelease::api_resource(),
     }
 }
 
@@ -194,19 +187,12 @@ impl ClusterWriter for KubeWriter {
         resource_version: &str,
         patch: &HelmReleasePatch,
     ) -> impl Future<Output = Result<String, WriteError>> + Send {
-        let mut body = Map::new();
-        body.insert(
-            "metadata".into(),
-            metadata(resource_version, &patch.annotations, &BTreeMap::new()),
-        );
-        if let Some(suspend) = patch.suspend {
-            body.insert("spec".into(), json!({"suspend": suspend}));
-        }
+        let body = reaper_flux::holds::merge_body(resource_version, patch);
         self.merge(
             ObjectKind::HelmRelease,
             Some(&helm_release.namespace),
             &helm_release.name,
-            Value::Object(body),
+            body,
         )
     }
 }

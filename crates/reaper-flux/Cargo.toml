@@ -12,8 +12,6 @@ k8s-openapi.workspace = true
 kube.workspace = true
 reaper-core.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
 
 [lints]

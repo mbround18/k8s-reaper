@@ -97,15 +97,15 @@ and a `plan` annotation. No replicas or Flux object changes.
   - step order (record + kustomize disable → HelmRelease hold → scale → mark reaped);
   - resume after failure at each step without repeating a completed step (FR-016);
   - `reaping` with replicas > 0 continues and is not taken as a restore.
-- [ ] T042 [P] [US2] Flux adapter contract tests in `crates/reaper-flux/tests/holds.rs`. Using a mock API, they check the HelmRelease merge patch body: `spec.suspend` only when not already suspended, the `held-for` set is sorted and deduplicated, `suspended-by-reaper`, and the reconcile annotation on a kustomize-managed HelmRelease.
+- [X] T042 [P] [US2] Flux adapter contract tests in `crates/reaper-flux/tests/holds.rs`. Using a mock API, they check the HelmRelease merge patch body: `spec.suspend` only when not already suspended, the `held-for` set is sorted and deduplicated, `suspended-by-reaper`, and the reconcile annotation on a kustomize-managed HelmRelease.
 
 ### Implementation
 
 - [X] T043 [US2] Extend `decide()` with the `Reap` plan (remaining steps only), limits and the ceiling in `crates/reaper-core/src/decide.rs`
 - [X] T044 [US2] Implement the executor's full path with per-step recording in `crates/reaper-core/src/executor.rs`
-- [ ] T045 [P] [US2] Implement the minimal HelmRelease v2 type and `ApiResource` in `crates/reaper-flux/src/helmrelease.rs`
-- [ ] T046 [US2] Implement HelmRelease hold/release patches in `crates/reaper-flux/src/holds.rs` (part of the `ClusterWriter` impl, composed in the app)
-- [ ] T047 [US2] Implement scale via the `scale` subresource and the kustomize reconcile annotation patch in `crates/reaper-kube/src/writer.rs`
+- [X] T045 [P] [US2] Implement the minimal HelmRelease v2 type and `ApiResource` in `crates/reaper-flux/src/helmrelease.rs`
+- [X] T046 [US2] Implement HelmRelease hold/release patches in `crates/reaper-flux/src/holds.rs` (part of the `ClusterWriter` impl, composed in the app)
+- [X] T047 [US2] Implement scale via the `scale` subresource and the kustomize reconcile annotation patch in `crates/reaper-kube/src/writer.rs`
 - [ ] T048 [US2] Write integration test `apps/k8s-reaper/tests/us2_reap.rs` (`#[ignore]`). It covers plain, kustomize and Helm fixtures; replicas stay 0 through three forced Flux reconciles (SC-002); `PartiallyAvailable` is untouched; and it verifies research R4's prune/force questions.
 
 **Checkpoint**: full mode works; restore is not done yet, so do not enable full mode outside dev.
@@ -128,12 +128,12 @@ its pre-reap state.
   - restore runs in report mode and is not rate-limited (FR-018 to FR-020);
   - a crash between restore steps converges;
   - `mode=off` on a reaped workload restores first, then ignores it.
-- [ ] T051 [P] [US3] HelmRelease release contract test in `crates/reaper-flux/tests/holds.rs`: unsuspend only when `held-for` is empty and `suspended-by-reaper=true`; clean up `reaper.boop.ninja/*` keys
+- [X] T051 [P] [US3] HelmRelease release contract test in `crates/reaper-flux/tests/holds.rs`: unsuspend only when `held-for` is empty and `suspended-by-reaper=true`; clean up `reaper.boop.ninja/*` keys
 
 ### Implementation
 
 - [X] T052 [US3] Implement the `Restore` plan and the deleted/recreated-workload cleanup of `held-for` in `crates/reaper-core/src/decide.rs`
-- [ ] T053 [US3] (executor part done) Implement restore execution in `crates/reaper-core/src/executor.rs` and the release patch in `crates/reaper-flux/src/holds.rs`
+- [X] T053 [US3] Implement restore execution in `crates/reaper-core/src/executor.rs` and the release patch in `crates/reaper-flux/src/holds.rs`
 - [ ] T054 [US3] Trigger an immediate cycle on a `restore` annotation change, or a replicas change on a `reaped` workload, from the watch stream in `crates/reaper-kube/src/snapshot.rs` and `apps/k8s-reaper/src/main.rs`
 - [ ] T055 [US3] Write integration test `apps/k8s-reaper/tests/us3_restore.rs` (`#[ignore]`). It checks an exact pre-reap state diff after restore for each fixture (SC-003).
 
@@ -252,7 +252,7 @@ with the owner's agreement and saying so in the commit.
 
 - [ ] G06 Events carry no `regarding.uid`, so `kubectl describe` may not attach them; Events about cluster-scoped objects (ReaperConfig) land in `default`. Fill the uid from the snapshot and put cluster-scoped Events in the reaper's own namespace (contracts/events.md)
 - [X] G07 `scale` has no `resourceVersion` precondition, unlike metadata patches. Add one, with a writer contract test (needed before T044 full mode). The scale merge patch now carries `metadata.resourceVersion`; a 409 maps to `Conflict`
-- [ ] G08 The reaper-flux `HelmRelease` type is minimal (enough for the snapshot). Reconcile it with T045 rather than writing a second one
+- [X] G08 The reaper-flux `HelmRelease` type is minimal (enough for the snapshot). Reconcile it with T045 rather than writing a second one
 - [ ] G09 Crash-looping pods with no supported owner are only logged. Decide with the owner whether they get a metric or Event (spec.md is silent); record the decision in spec.md Edge Cases
 
 ### Runtime and observability
