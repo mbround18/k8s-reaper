@@ -655,10 +655,10 @@ Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`:
 
 1. `ci`: the same `ci.yml` jobs (fmt, clippy, tests, image build), called as a
    reusable workflow.
-2. `docker-release`: the shared
-   `mbround18/gh-reusable/.github/workflows/docker-release.yaml@main`, which
-   builds `linux/amd64` and pushes `mbround18/k8s-reaper` to Docker Hub and
-   to GHCR.
+2. `docker-release`: installs [paws](https://github.com/mbround18/paws) with
+   its `paws-up` action and runs `paws docker`. It builds `linux/amd64` and
+   pushes `mbround18/k8s-reaper:X.Y.Z` and `:latest` to Docker Hub, mirrored
+   to GHCR. The paws action and binary are pinned in the workflow.
 
 It needs the repository variable `DOCKER_USERNAME` and the secret
 `DOCKER_TOKEN`. GHCR uses the workflow's `GITHUB_TOKEN`.
