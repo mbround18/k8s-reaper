@@ -1,0 +1,7 @@
+# Merge patch for ReaperConfig/default: notify on ReapPlanned, which report
+# mode produces (US6 independent test). Applied by `make dev-notify`.
+spec:
+  notifications:
+    clusterName: k3d-dev
+    reasons: [ReapPlanned]
+    minInterval: 1h

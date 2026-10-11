@@ -1,0 +1,10 @@
+# Notification catchers for US6 on the dev cluster (`make dev-notify`):
+# an HTTP echo server for webhooks, Mailpit for mail, and the channel Secret
+# the reaper mounts. Dev only: both channels use insecure=true.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - echo.yaml
+  - mailpit.yaml
+  - secret.yaml

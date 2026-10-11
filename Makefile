@@ -8,7 +8,7 @@ STORY          ?=
 FLUX_VERSION   ?= v2.7.0
 DEV_REGISTRY   ?= localhost:5001
 
-.PHONY: help build test test-integration lint image gc dev-cluster dev-push dev-down dev-load dev-run
+.PHONY: help build test test-integration lint image gc dev-cluster dev-push dev-down dev-load dev-run dev-notify
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -68,3 +68,9 @@ dev-load: ## Import the image into the k3d cluster
 dev-run: ## Run the reaper in-cluster (namespace k8s-reaper, report mode)
 	kubectl apply -f deploy/dev/reaper.yaml
 	kubectl -n k8s-reaper rollout status deploy/k8s-reaper
+
+dev-notify: ## Notification catchers (echo, Mailpit), the channel Secret, and ReapPlanned notifications
+	kubectl apply -k deploy/dev/notify
+	kubectl patch reaperconfig default --type=merge --patch-file deploy/dev/notify/reaperconfig-patch.yaml
+	kubectl -n notify-dev rollout status deploy/echo --timeout=120s
+	kubectl -n notify-dev rollout status deploy/mailpit --timeout=120s

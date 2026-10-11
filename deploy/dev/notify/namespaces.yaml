@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: notify-dev
+---
+# The reaper's own namespace, where the channel Secret lives. Also created by
+# deploy/dev/reaper.yaml (gap G02); applying it twice is harmless.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-reaper

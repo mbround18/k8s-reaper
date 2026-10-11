@@ -229,7 +229,7 @@ mounted Secret, `ReapPlanned` opt-in).
 - [X] T095 [US6] Create adapter crate `crates/reaper-notify`: channel directory loader (re-read each cycle), Discord/Slack/generic webhook senders, SMTP sender, bounded queue worker with retry/backoff; secrets wrapped in a redacting type
 - [X] T096 [US6] Add `reaper_notifications_total` and `reaper_notification_channels` to `crates/reaper-observability/src/telemetry.rs` and the exposition test
 - [X] T097 [US6] Wire `--notifications-dir` / `REAPER_NOTIFICATIONS_DIR` and the worker into `apps/k8s-reaper/src/main.rs`; graceful shutdown drains the queue for at most 5 s
-- [ ] T098 [US6] Dev: echo server and mail catcher in `deploy/dev/notify/` (e.g. a small HTTP echo and Mailpit), a sample Secret using `example.test` hosts, and integration test `apps/k8s-reaper/tests/us6_notify.rs` (`#[ignore]`) for SC-009
+- [X] T098 [US6] Dev: echo server and mail catcher in `deploy/dev/notify/` (e.g. a small HTTP echo and Mailpit), a sample Secret using `example.test` hosts, and integration test `apps/k8s-reaper/tests/us6_notify.rs` (`#[ignore]`) for SC-009 (mounting the Secret into the reaper waits on G02, `deploy/dev/reaper.yaml`)
 - [ ] T099 [P] [US6] `docs/guides/notifications.md`: creating the Secret, one example per provider, choosing reasons; and chart values (Secret name, `optional: true` mount) noted for T076
 
 **Checkpoint**: SC-009 passes on k3d.

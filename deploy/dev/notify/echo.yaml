@@ -1,0 +1,34 @@
+# Logs every request it receives, body included, and answers 200.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: notify-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: echo }
+  template:
+    metadata:
+      labels: { app: echo }
+    spec:
+      containers:
+        - name: echo
+          image: mendhak/http-https-echo:36
+          env:
+            - { name: HTTP_PORT, value: "8080" }
+            - { name: LOG_WITHOUT_NEWLINE, value: "true" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: notify-dev
+spec:
+  selector: { app: echo }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

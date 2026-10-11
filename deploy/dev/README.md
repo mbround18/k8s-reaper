@@ -27,6 +27,23 @@ To break it again, re-apply the patch:
 kubectl -n partial patch deploy rollout --type=strategic --patch-file deploy/dev/fixtures/partial-break.yaml
 ```
 
+## Notifications (US6)
+
+```bash
+make dev-notify                  # echo server + Mailpit in notify-dev, the Secret, reasons: [ReapPlanned]
+make test-integration STORY=us6_notify
+```
+
+`notify/secret.yaml` holds two channels: `dev-echo` (generic webhook to the
+echo server) and `dev-mail` (SMTP to Mailpit). Both use `insecure=true`, which
+is for this dev cluster only. The reaper's Deployment must mount the Secret at
+`/etc/k8s-reaper/notifications` (`optional: true`). To read what arrived:
+
+```bash
+kubectl -n notify-dev logs deploy/echo
+kubectl -n notify-dev port-forward svc/mailpit 8025   # then http://localhost:8025
+```
+
 ## Down
 
 ```bash
