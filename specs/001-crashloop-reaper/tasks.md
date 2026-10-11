@@ -93,7 +93,7 @@ and a `plan` annotation. No replicas or Flux object changes.
   - reap action list per case: plain, kustomize, Helm, Helm whose HelmRelease is kustomize-managed, HelmRelease already suspended, reconcile annotation already set (FR-013 to FR-015);
   - `RateLimited` and `ReapCeilingReached` with deterministic ordering (FR-017);
   - Flux toggle off on a Flux-managed workload → `ReportOnlyScope` (FR-027).
-- [ ] T041 [P] [US2] `executor.rs` tests with fake ports:
+- [X] T041 [P] [US2] `executor.rs` tests with fake ports:
   - step order (record + kustomize disable → HelmRelease hold → scale → mark reaped);
   - resume after failure at each step without repeating a completed step (FR-016);
   - `reaping` with replicas > 0 continues and is not taken as a restore.
@@ -102,7 +102,7 @@ and a `plan` annotation. No replicas or Flux object changes.
 ### Implementation
 
 - [X] T043 [US2] Extend `decide()` with the `Reap` plan (remaining steps only), limits and the ceiling in `crates/reaper-core/src/decide.rs`
-- [ ] T044 [US2] Implement the executor's full path with per-step recording in `crates/reaper-core/src/executor.rs`
+- [X] T044 [US2] Implement the executor's full path with per-step recording in `crates/reaper-core/src/executor.rs`
 - [ ] T045 [P] [US2] Implement the minimal HelmRelease v2 type and `ApiResource` in `crates/reaper-flux/src/helmrelease.rs`
 - [ ] T046 [US2] Implement HelmRelease hold/release patches in `crates/reaper-flux/src/holds.rs` (part of the `ClusterWriter` impl, composed in the app)
 - [ ] T047 [US2] Implement scale via the `scale` subresource and the kustomize reconcile annotation patch in `crates/reaper-kube/src/writer.rs`
@@ -119,7 +119,7 @@ its pre-reap state.
 
 ### Tests first
 
-- [ ] T050 [P] [US3] `decide.rs` and `executor.rs` tests:
+- [X] T050 [P] [US3] `decide.rs` and `executor.rs` tests:
   - restore by annotation and by manual scale-up (keeps replicas);
   - previous reconcile value restored vs. deleted (`<none>`);
   - shared HelmRelease stays held until the last workload is restored;
@@ -133,7 +133,7 @@ its pre-reap state.
 ### Implementation
 
 - [X] T052 [US3] Implement the `Restore` plan and the deleted/recreated-workload cleanup of `held-for` in `crates/reaper-core/src/decide.rs`
-- [ ] T053 [US3] Implement restore execution in `crates/reaper-core/src/executor.rs` and the release patch in `crates/reaper-flux/src/holds.rs`
+- [ ] T053 [US3] (executor part done) Implement restore execution in `crates/reaper-core/src/executor.rs` and the release patch in `crates/reaper-flux/src/holds.rs`
 - [ ] T054 [US3] Trigger an immediate cycle on a `restore` annotation change, or a replicas change on a `reaped` workload, from the watch stream in `crates/reaper-kube/src/snapshot.rs` and `apps/k8s-reaper/src/main.rs`
 - [ ] T055 [US3] Write integration test `apps/k8s-reaper/tests/us3_restore.rs` (`#[ignore]`). It checks an exact pre-reap state diff after restore for each fixture (SC-003).
 
@@ -265,7 +265,7 @@ with the owner's agreement and saying so in the commit.
 
 ### Behaviour not yet built (tracked elsewhere, listed so nothing is assumed done)
 
-- [ ] G15 Full mode is gated in the executor until T044; a `Reaping` state currently plans nothing (`Plan::Nothing`) until US2/US3
+- [X] G15 Full mode is gated in the executor until T044; a `Reaping` state currently plans nothing (`Plan::Nothing`) until US2/US3 — closed by T043/T044/T052
 - [X] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet. `us1_report` and `us6_notify` pass on kind (`make dev-kind … KUBE_CONTEXT=kind-fathom-dev`); later stories add their own
 - [ ] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
 
