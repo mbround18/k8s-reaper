@@ -100,12 +100,12 @@ pub async fn restore_leftovers(client: &Client) {
     }
 }
 
-fn reaper_configs(client: &Client) -> Api<DynamicObject> {
+pub fn reaper_configs(client: &Client) -> Api<DynamicObject> {
     let ar = dynamic("reaper.boop.ninja", "v1alpha1", "ReaperConfig");
     Api::all_with(client.clone(), &ar)
 }
 
-async fn patch_config(client: &Client, spec: &Value) {
+pub async fn patch_config(client: &Client, spec: &Value) {
     reaper_configs(client)
         .patch(
             "default",
