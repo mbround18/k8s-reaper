@@ -9,8 +9,8 @@
 //! `kustomize` namespaces with crash-loop thresholds no Deployment reaches, so
 //! only CronJobs are reaped. Waits for `cron/failing` and the Flux-managed
 //! `kustomize/failing` to be suspended while `cron/flaky` never is, forces
-//! three reconciles on `flux-system/dev-kustomize`, then restores both and
-//! puts the ReaperConfig back.
+//! three reconciles on `flux-system/dev-kustomize`, then restores both, checks
+//! they stay resumed for two cycles and puts the ReaperConfig back.
 
 mod common;
 mod full;
@@ -22,7 +22,7 @@ use k8s_openapi::api::batch::v1::CronJob;
 use kube::api::{Patch, PatchParams};
 use kube::{Api, Client};
 use reaper_core::Timestamp;
-use reaper_core::record::{FAILED_RUNS, FAILING_SINCE, FLUX_RECONCILE, RESTORE};
+use reaper_core::record::{FAILED_RUNS, FAILING_SINCE, FLUX_RECONCILE, LAST_FAILED_JOB, RESTORE};
 use serde_json::json;
 
 const FAILING_DURATION: Duration = Duration::from_mins(10);
@@ -181,6 +181,27 @@ async fn a_cron_job_that_keeps_failing_is_suspended_and_restored() {
     }
     let ks = get(&client, REAPED[1]).await;
     assert_ne!(annotation(&ks, FLUX_RECONCILE).as_deref(), Some("disabled"));
+
+    // Scenario 5: the streak starts again from zero, so the failures from
+    // before the restore do not suspend it straight back.
+    for target in REAPED {
+        assert!(
+            annotation(&get(&client, target).await, LAST_FAILED_JOB).is_some(),
+            "{}/{}: restore dropped the last counted Job",
+            target.0,
+            target.1
+        );
+    }
+    tokio::time::sleep(SUSPEND_WITHIN).await;
+    for target in REAPED {
+        let c = get(&client, target).await;
+        assert!(
+            !suspended(&c) && !qualified(&c, SystemTime::now()),
+            "{}/{} was suspended again by failures from before the restore",
+            target.0,
+            target.1
+        );
+    }
 
     // Leave full mode before the reaper sees them fail long enough again.
     drop(full_mode);
