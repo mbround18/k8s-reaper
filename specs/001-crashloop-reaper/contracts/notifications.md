@@ -49,9 +49,14 @@ A `?format=discord|slack|generic` query parameter overrides inference; it is
 stripped before the request is sent. Email takes `from` (required) and `to`
 (required, comma-separated) as query parameters, and credentials from the URL
 user info (percent-encoded). `smtp://` requires STARTTLS; `smtp://…?insecure=true`
-allows an unencrypted connection (for a local mail catcher in dev only), as
-`http://…?insecure=true` does for webhooks. `insecure` is stripped before
-sending.
+uses STARTTLS only when the server offers it, so it allows an unencrypted
+connection (for a local mail catcher in dev only), as `http://…?insecure=true`
+does for webhooks. `insecure` is stripped before sending. Default ports: 465
+for `smtps`, 587 for `smtp`.
+
+Webhook redirects are not followed: a `3xx` is a failed delivery. Discord
+messages set `allowed_mentions` to none, so a name in a note never pings
+anyone.
 
 Generic payload (stable, versioned by `schema`):
 
@@ -111,4 +116,7 @@ report mode (Question 6). The config holds no URLs and no secrets.
 | Metric                               | Type    | Labels                          | Meaning                                       |
 | ------------------------------------ | ------- | ------------------------------- | --------------------------------------------- |
 | `reaper_notifications_total`         | counter | `channel`, `provider`, `result` | `result` ∈ `sent`, `failed`, `dropped`, `filtered` |
-| `reaper_notification_channels`       | gauge   | `channel`, `provider`, `valid`  | 1 per channel file read in the last cycle      |
+| `reaper_notification_channels`       | gauge   | `channel`, `provider`, `valid`  | 1 per channel file read in the last cycle; `valid` is `true` or `false`, and `provider` is `unknown` for an invalid file |
+
+An invalid channel file is logged once, by name and reason, when it first
+appears or changes; the others still work.
