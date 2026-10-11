@@ -70,12 +70,35 @@ merge-patched on `reaperconfigs/status` after every cycle.
 | `--log-format`          | `REAPER_LOG_FORMAT`           | `json`               | `json` or `text`                               |
 | `--notifications-dir`   | `REAPER_NOTIFICATIONS_DIR`    | `/etc/k8s-reaper/notifications` | Mounted Secret of channel URLs (US6, [notifications.md](./notifications.md)) |
 | —                       | `RUST_LOG`                    | `info`               | Log filter                                     |
-| —                       | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (OTLP off)     | Standard OTel SDK env; also `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` |
+| —                       | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (OTLP off)     | Standard OTel SDK env; see [OpenTelemetry](#opentelemetry) |
 
 None of these change reaping behaviour (constitution V).
 
 Subcommands: `k8s-reaper run` (default) and `k8s-reaper crd` (prints the CRD
 YAML to stdout, for the chart).
+
+## OpenTelemetry
+
+OTLP export is off unless an endpoint is set. Configuration is the standard
+OTel SDK environment; the reaper adds no flags of its own.
+
+| Variable                              | Effect                                              |
+| ------------------------------------- | --------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`         | enables both traces and metrics export              |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | enables traces only (overrides the general one for traces) |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | enables metrics only (overrides the general one for metrics) |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | resource; `service.name` defaults to `k8s-reaper` when neither sets it |
+| other `OTEL_*` the SDK reads (headers, timeout, batch and export intervals) | passed through to the SDK |
+
+- An empty or blank endpoint counts as unset.
+- Transport: OTLP over HTTP (protobuf). gRPC is not built in.
+- Signals: metrics and traces. The metrics are the same instruments as
+  `/metrics`, named with `.` in place of `_` and without the `_total`
+  suffix on counters (`reaper_actions_total` is `reaper.actions`).
+- The reaper creates **no spans of its own** (no `#[instrument]` or `span!`
+  in its code). Traces carry only the spans that libraries open through
+  `tracing`, bridged by the subscriber. `RUST_LOG` filters them as it
+  filters logs.
 
 ## HTTP
 

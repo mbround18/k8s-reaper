@@ -44,14 +44,17 @@ on `Valid`, not on `Ready`. `NotReady` is no longer written.
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | enables traces only (overrides the general one for traces) |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | enables metrics only (overrides the general one for metrics) |
 | `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | resource; `service.name` defaults to `k8s-reaper` when neither sets it |
-| other `OTEL_*` the SDK reads (headers, timeout) | passed through to the SDK                |
+| other `OTEL_*` the SDK reads (headers, timeout, batch and export intervals) | passed through to the SDK |
 
+- An empty or blank endpoint counts as unset.
 - Transport: OTLP over HTTP (protobuf). gRPC is not built in.
-- Signals: metrics (the same instruments as `/metrics`, with `.` in place of
-  `_`) and traces.
-- The reaper creates **no spans of its own**. Traces carry only what the
-  `tracing` subscriber bridges (log spans from libraries). An empty or blank
-  endpoint counts as unset.
+- Signals: metrics and traces. The metrics are the same instruments as
+  `/metrics`, named with `.` in place of `_` and without the `_total`
+  suffix on counters (`reaper_actions_total` is `reaper.actions`).
+- The reaper creates **no spans of its own** (no `#[instrument]` or `span!`
+  in its code). Traces carry only the spans that libraries open through
+  `tracing`, bridged by the subscriber. `RUST_LOG` filters them as it
+  filters logs.
 
-The implementing task checks this table against `reaper-observability`
-`tracing.rs` before it lands.
+Checked against `reaper-observability` `tracing.rs` and `telemetry.rs` in T143;
+the `_total` and `RUST_LOG` points were corrected then.

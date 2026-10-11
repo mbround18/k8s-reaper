@@ -8,12 +8,13 @@ API `events.k8s.io/v1`. `reportingController: reaper.boop.ninja/k8s-reaper`.
 | -------------------- | ------- | ------------------------ | ------------ | ------------------------------------------------------------------------------------------ |
 | `CrashLoopObserved`  | Normal  | workload                 | `Observe`    | none → `observed`                                                                          |
 | `ReapPlanned`        | Warning | workload                 | `Plan`       | → `candidate`, effective mode `report`. Note lists the actions full mode would take         |
-| `ReapSkipped`        | Warning | workload                 | `Plan`       | candidate with a skip reason, or a new skip reason. Note: `reason=<SkipReason>; would: …`   |
+| `ReapSkipped`        | Warning | workload                 | `Plan`       | candidate with a skip reason, or a new skip reason. Note: `reason=<SkipReason>; would: …` (see [Skip reasons](#skip-reasons)) |
 | `Reaped`             | Warning | workload                 | `ScaleDown`  | → `reaped`. Note: original replicas (or `suspended` for a CronJob), reason, Flux holds placed |
 | `ReapFailed`         | Warning | workload                 | `ScaleDown`  | a reap step failed (API error, conflict). Retried next cycle                                |
 | `Restored`           | Normal  | workload                 | `Restore`    | restore finished. Note: a restore note (see [Restore notes](#restore-notes)), replicas, Flux holds released |
 | `RestoreFailed`      | Warning | workload                 | `Restore`    | a restore step failed. Retried next cycle                                                   |
 | `RestoreIgnored`     | Normal  | workload                 | `Restore`    | `restore` annotation on a workload the reaper holds no reap for                             |
+| `RecordFailed`       | Warning | workload                 | `Record`     | writing the reaper's own state label, record or plan annotation failed (not a conflict or not-found). Retried next cycle; counted as `reaper_actions_total{action="record",result="error"}` |
 | `CrashLoopRecovered` | Normal  | workload                 | `Recover`    | observed/candidate → none after `recoveryWindow` healthy                                    |
 | `JobFailuresObserved`| Normal  | CronJob                  | `Observe`    | none → `observed`: the latest finished Job failed. Note: failing since, last failed Job     |
 | `JobFailuresRecovered`| Normal | CronJob                  | `Recover`    | observed/candidate → none: a Job succeeded                                                  |
@@ -33,6 +34,35 @@ string is the `RestoreKind`.
 | `manual-scale-up` | someone scaled a reaped Deployment or StatefulSet above zero                           |
 | `manual-resume`   | someone resumed a reaped CronJob, or the HelmRelease the reaper suspended for it       |
 | `opted-out`       | `mode=off` on the workload or namespace, or its namespace left the reaper's scope      |
+
+## Skip reasons
+
+`ReapSkipped` notes start `reason=<SkipReason>`. The same string appears in
+the plan annotation's `skip` field and in the `reason` label of
+`reaper_workload_skipped`.
+
+| Skip reason           | When                                                                  |
+| --------------------- | --------------------------------------------------------------------- |
+| `ReportOnlyScope`     | `mode=report` on the workload or namespace, or a needed Flux step is turned off |
+| `CannotScaleToZero`   | a DaemonSet                                                           |
+| `ManagedByController` | a controller `ownerReference` (e.g. a database operator)              |
+| `ManagedByAutoscaler` | a KEDA ScaledObject targets the workload (an HPA does not count)      |
+| `PartiallyAvailable`  | at least one replica is ready                                         |
+| `RateLimited`         | this cycle's reap has been used by a longer-broken workload           |
+| `ReapCeilingReached`  | `maxReaped` workloads are already held                                |
+
+`OptedOut` and `UnsupportedOwner` were removed in 002. No release produced them:
+
+- an opted-out workload is never a candidate;
+- crash-looping pods without a supported owner are counted in
+  `reaper_unowned_crashlooping_pods`.
+
+The "Restore notes" and "Skip reasons" tables are read by
+`apps/k8s-reaper/tests/contracts.rs`, which checks them in both directions
+against `RestoreKind` and `SkipReason`. Keep their first column as plain
+backticked strings.
+
+## Series, note text and alerting
 
 A repeat of the same object, reason, action, type and note within 6 minutes
 continues that Event's `series`; a different note is always a new Event, so the

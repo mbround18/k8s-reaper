@@ -120,8 +120,8 @@ alerts at start-up; and (chart, US5 PR) `ReaperDown` only exists with the Servic
 - [ ] T135 [US2] Docs:
   - in `docs/guides/monitoring.md`: the `record` action, the `RecordFailed` runbook, and the start-up behaviour of both series;
   - in `docs/guides/troubleshooting.md`: "label writes are failing";
-  - apply contracts/metrics.md (the Metrics table, and the Alert rules with the labels column) to `specs/001-crashloop-reaper/contracts/metrics.md`;
-  - apply the `RecordFailed` row to `specs/001-crashloop-reaper/contracts/events.md`.
+  - ~~apply contracts/metrics.md (the Metrics table, and the Alert rules with the labels column) to `specs/001-crashloop-reaper/contracts/metrics.md`;~~ done under T143;
+  - ~~apply the `RecordFailed` row to `specs/001-crashloop-reaper/contracts/events.md`.~~ done under T143.
 
 ## Phase 5: User Story 3 — the reaper lets go of what it no longer looks at (P2)
 
@@ -187,7 +187,7 @@ keeps the code and the contracts in step.
   - `specs/001-crashloop-reaper/spec.md` lines 382–383 (add a "removed in 002" note rather than rewriting history);
   - `docs/guides/troubleshooting.md` ~162;
   - `docs/guides/how-it-works.md` ~197.
-- [ ] T143 [US4] Apply the remaining contract deltas to `specs/001-crashloop-reaper/contracts/`:
+- [X] T143 [US4] Apply the remaining contract deltas to `specs/001-crashloop-reaper/contracts/` (also took T135's two contract bullets: the whole metrics.md delta and the `RecordFailed` row; the OpenTelemetry delta was corrected for counters losing `_total` over OTLP and for `RUST_LOG` filtering spans):
   - `events.md`: the "Restore notes" and "Skip reasons" tables exactly as in contracts/events.md;
   - `metrics.md`: `ReaperDown` job text;
   - `config.md`: the OpenTelemetry section (FR-014). Verify every row against `crates/reaper-observability/src/tracing.rs`, including that no `#[instrument]` or `span!` exists in `crates/` or `apps/`, and correct the delta wherever the code differs.
