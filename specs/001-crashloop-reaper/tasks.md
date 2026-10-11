@@ -266,7 +266,7 @@ with the owner's agreement and saying so in the commit.
 ### Behaviour not yet built (tracked elsewhere, listed so nothing is assumed done)
 
 - [ ] G15 Full mode is gated in the executor until T044; a `Reaping` state currently plans nothing (`Plan::Nothing`) until US2/US3
-- [ ] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet
+- [X] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet. `us1_report` and `us6_notify` pass on kind (`make dev-kind … KUBE_CONTEXT=kind-fathom-dev`); later stories add their own
 - [ ] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
 
 ## Dependencies
