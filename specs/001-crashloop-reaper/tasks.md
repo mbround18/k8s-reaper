@@ -46,23 +46,23 @@ and a `plan` annotation. No replicas or Flux object changes.
 
 ### Tests first
 
-- [ ] T020 [P] [US1] `crates/reaper-core/src/detect.rs` tests:
+- [X] T020 [P] [US1] `crates/reaper-core/src/detect.rs` tests:
   - FR-001 container classification: waiting CrashLoopBackOff, terminated Error/OOMKilled, init container, ImagePullBackOff (no), ready (no);
   - FR-002 owner resolution: Deployment via ReplicaSet, StatefulSet, DaemonSet, Job (ignored), bare pod (unsupported).
-- [ ] T021 [P] [US1] `crates/reaper-core/src/decide.rs` tests, US1 scenarios 1–5:
+- [X] T021 [P] [US1] `crates/reaper-core/src/decide.rs` tests, US1 scenarios 1–5:
   - under duration → `observed`; under restarts → `observed`; both met → `candidate`;
   - flapping does not reset `crashloop-since`; recovery only after `recoveryWindow` (FR-003);
   - DaemonSet → `CannotScaleToZero`; `PartiallyAvailable`; `ManagedByController`; `ManagedByAutoscaler` (KEDA);
   - excluded namespace, own namespace, `includeNamespaces` globs → nothing.
-- [ ] T022 [P] [US1] Dry-run-equivalence harness in `crates/reaper-core/tests/equivalence.rs` (SC-004). For every fixture in the decide tests, it runs the executor with fake ports in `Report` and `Full` and asserts identical published plan JSON. In `Report`, the fake `ClusterWriter` must receive only `reaper.boop.ninja/*` annotation/label writes (FR-012).
+- [X] T022 [P] [US1] Dry-run-equivalence harness in `crates/reaper-core/tests/equivalence.rs` (SC-004). For every fixture in the decide tests, it runs the executor with fake ports in `Report` and `Full` and asserts identical published plan JSON. In `Report`, the fake `ClusterWriter` must receive only `reaper.boop.ninja/*` annotation/label writes (FR-012).
 - [ ] T023 [P] [US1] Snapshot-mapping contract tests in `crates/reaper-kube/tests/snapshot.rs`. They use JSON fixtures in `crates/reaper-kube/tests/fixtures/` taken from scrubbed live shapes (slam-prod Deployment/ReplicaSet/Pod, fathom-dev crashloop, Job pod, ImagePullBackOff pod).
 - [ ] T024 [P] [US1] Writer contract test in `crates/reaper-kube/tests/writer.rs` using a `tower-test` mock. Annotation/label merge patches carry a `resourceVersion` precondition and field manager `k8s-reaper`.
 
 ### Implementation
 
-- [ ] T025 [US1] Implement container classification and owner resolution in `crates/reaper-core/src/detect.rs`
-- [ ] T026 [US1] Implement `decide()` for the observe/candidate/recover/skip paths. Ordering is deterministic (longest crash-looping first, then namespace/name), and the `would` actions are computed for every candidate (scale, kustomize, HelmRelease per FluxRefs and `flux.*` toggles, FR-027). Code goes in `crates/reaper-core/src/decide.rs`.
-- [ ] T027 [US1] Implement the executor's report path in `crates/reaper-core/src/executor.rs`: publish the plan annotation, state label, transition Events and telemetry; the mode gate stops before any `Action` that is not a reaper-annotation write
+- [X] T025 [US1] Implement container classification and owner resolution in `crates/reaper-core/src/detect.rs`
+- [X] T026 [US1] Implement `decide()` for the observe/candidate/recover/skip paths. Ordering is deterministic (longest crash-looping first, then namespace/name), and the `would` actions are computed for every candidate (scale, kustomize, HelmRelease per FluxRefs and `flux.*` toggles, FR-027). Code goes in `crates/reaper-core/src/decide.rs`.
+- [X] T027 [US1] Implement the executor's report path in `crates/reaper-core/src/executor.rs`: publish the plan annotation, state label, transition Events and telemetry; the mode gate stops before any `Action` that is not a reaper-annotation write
 - [ ] T028 [US1] Implement reflectors and snapshot building in `crates/reaper-kube/src/snapshot.rs`:
   - Pods, ReplicaSets, Deployments, StatefulSets, DaemonSets, Namespaces, HPAs;
   - KEDA ScaledObjects only if the CRD is discovered;

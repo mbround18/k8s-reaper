@@ -120,6 +120,12 @@ const MINUTE: u64 = 60;
 const HOUR: u64 = 60 * MINUTE;
 const DAY: u64 = 24 * HOUR;
 
+/// Valid range, in seconds, of `detection.crashLoopDuration` (and its
+/// per-workload override, FR-034).
+pub const CRASH_LOOP_DURATION_RANGE: (u64, u64) = (5 * MINUTE, 7 * DAY);
+/// Valid range of `detection.minRestarts` (and its override).
+pub const MIN_RESTARTS_RANGE: (u32, u32) = (1, 10_000);
+
 /// Configuration as it arrives from outside (the CRD spec): every field
 /// optional, durations as strings. `Config::from_raw` fills defaults and
 /// reports every invalid field at once.
@@ -178,14 +184,14 @@ impl Config {
             &mut errors,
             "spec.detection.crashLoopDuration",
             raw.crash_loop_duration.as_deref(),
-            (5 * MINUTE, 7 * DAY),
+            CRASH_LOOP_DURATION_RANGE,
             &mut c.detection.crash_loop_duration,
         );
         int_field(
             &mut errors,
             "spec.detection.minRestarts",
             raw.min_restarts,
-            (1, 10_000),
+            MIN_RESTARTS_RANGE,
             &mut c.detection.min_restarts,
         );
         duration_field(

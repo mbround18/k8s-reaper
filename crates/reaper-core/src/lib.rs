@@ -4,6 +4,9 @@
 //! client, no async runtime and no clock: "now" is always a parameter.
 
 pub mod config;
+pub mod decide;
+pub mod detect;
+pub mod executor;
 pub mod glob;
 pub mod model;
 pub mod plan;

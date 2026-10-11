@@ -207,6 +207,9 @@ pub struct Decision {
     pub plan: Plan,
     /// When the crash loop or failing streak began, if it is ongoing.
     pub since: Option<Timestamp>,
+    /// When a crash-looping workload was first seen healthy again; cleared
+    /// when it crashes before the recovery window ends (FR-003).
+    pub healthy_since: Option<Timestamp>,
     pub evidence: Option<Evidence>,
 }
 
