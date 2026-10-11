@@ -177,29 +177,33 @@ contracts is unproducible; checked by a test that enumerates the values.
 
 ---
 
-### User Story 5 - The chart installs as its README says (Priority: P3)
+### User Story 5 - The chart's defaults and install paths hold up (Priority: P3)
 
-An operator installing from `mbround18/helm-charts` follows the chart's
-README. Today its `helm repo add` URL does not exist, the memory request is
-below what the reaper uses on a real cluster, the chart carries Argo-only
-sync-wave annotations that do nothing under Flux, and the CRD's header
-comment is lost whenever the CRD is regenerated.
+An operator installs from `mbround18/helm-charts`. The chart is published in
+the Helm repository at `https://mbround18.github.io/helm-charts/` (since
+2026-10-11 06:03 UTC), but this repo's guides only describe installing from a
+Git clone. The memory request (32Mi) is below what the reaper uses on a real
+cluster (about 58Mi on roanoke), the chart's Argo CD sync-wave annotations
+are unexplained to Flux users, and the CRD's header comment is lost whenever
+the CRD is regenerated.
 
-**Why this priority**: The guides in this repo already give a working
-install; this fixes the chart's own copy and its defaults.
+**Why this priority**: Installs work today; this fixes the defaults and the
+docs around them.
 
-**Independent Test**: Follow the chart README verbatim on a fresh kind
-cluster; regenerate the CRD and diff it against the chart's copy.
+**Independent Test**: Install from the Helm repository on a fresh kind
+cluster by following the guide; regenerate the CRD and diff it against the
+chart's copy.
 
 **Acceptance Scenarios**:
 
-1. **Given** the chart README, **When** an operator follows it word for word,
-   **Then** the chart installs.
+1. **Given** the helm-chart guide, **When** an operator follows its Helm
+   repository install word for word (with Flux or with `helm`), **Then** the
+   chart installs.
 2. **Given** default values, **When** the reaper runs on a cluster the size of
    roanoke, **Then** its memory use stays below its request.
-3. **Given** the chart rendered for Flux, **When** a reader looks at its
-   annotations, **Then** none are tool-specific ordering hints that Flux
-   ignores (or they are documented as Argo CD only).
+3. **Given** the chart's sync-wave annotations, **When** a Flux user reads the
+   helm-chart guide, **Then** it says they are for Argo CD and have no effect
+   under Flux.
 4. **Given** a regenerated CRD, **When** it is compared with the chart's copy,
    **Then** they are identical, header comment included.
 
@@ -254,7 +258,8 @@ cluster; regenerate the CRD and diff it against the chart's copy.
   `record`), with a Warning Event on the workload, so that the existing
   `ReaperActionFailed` alert covers it.
 - **FR-006**: The `ReaperDown` alert MUST select the reaper by the scrape job
-  the chart's ServiceMonitor produces, for any release name.
+  the chart's ServiceMonitor produces, for any release name. (The chart
+  already does this, using the Service name; the contract MUST say so.)
 - **FR-007**: The chart MUST NOT install `ReaperDown` when the ServiceMonitor
   is disabled.
 - **FR-008**: The last-cycle timestamp and config-valid series MUST NOT
@@ -291,11 +296,15 @@ cluster; regenerate the CRD and diff it against the chart's copy.
 
 **Chart (US5, G29–G31; in `mbround18/helm-charts`)**
 
-- **FR-016**: The chart README's install instructions MUST work as written.
+- **FR-016**: This repo's README and helm-chart guide MUST describe installing
+  from the Helm repository (a Flux `HelmRepository` and plain `helm`), next
+  to the Git source they describe today, and both MUST work as written.
 - **FR-017**: The default memory request MUST be 64Mi, with a limit that
   leaves headroom over observed use (about 58Mi on roanoke).
-- **FR-018**: The chart MUST either drop the Argo CD sync-wave annotations or
-  document them as Argo CD only.
+- **FR-018**: The helm-chart guide MUST say that the chart's sync-wave
+  annotations are an Argo CD convention of the chart repository and do
+  nothing under Flux. The annotations stay (11 charts there use them, and
+  the chart's tests check them).
 - **FR-019**: The chart's CRD MUST be byte-identical to the output of
   `k8s-reaper crd` (header comment included), so regeneration loses nothing.
 
@@ -334,8 +343,8 @@ cluster; regenerate the CRD and diff it against the chart's copy.
 - **SC-007**: Every skip reason and restore note the code can produce is in
   the contracts, and every one in the contracts can be produced (checked by a
   test).
-- **SC-008**: On a fresh kind cluster, the chart README's instructions install
-  the chart with no edits.
+- **SC-008**: On a fresh kind cluster, the helm-chart guide's Helm repository
+  instructions install the chart with no edits.
 
 ## Owner Decisions
 
