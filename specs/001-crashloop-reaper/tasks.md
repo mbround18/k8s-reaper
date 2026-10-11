@@ -193,12 +193,12 @@ thresholds; SC-008.
 
 ## Phase 8: Polish and delivery
 
-- [ ] T070 [P] Write `CONTRIBUTING.md`:
+- [X] T070 [P] Write `CONTRIBUTING.md`:
   - setup: toolchain, cargo-sweep, k3d, Flux CLI for dev;
   - architecture (ports and adapters diagram) and decision log (link research.md);
   - testing tiers, `make` targets, release process;
   - signed commits.
-- [ ] T071 [P] Write `docs/guides/getting-started.md` (install via Flux HelmRelease, stay in report mode, read the reports, flip to full)
+- [X] T071 [P] Write `docs/guides/getting-started.md` (install via Flux HelmRelease, stay in report mode, read the reports, flip to full)
 - [ ] T072 [P] Write `docs/guides/restoring-a-workload.md`: the one restore command, manual scale-up, manual CronJob resume, "restore then fix" with Flux, shared HelmReleases
 - [ ] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field (including `cronJobs`), opt-out labels, examples for `slam-*`
 - [X] T074 Measure memory and cycle time against the plan's goals (< 64 MiB, < 1 s for 300 pods) with a synthetic snapshot benchmark in `crates/reaper-core/benches/decide.rs`
