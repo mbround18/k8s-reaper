@@ -1,0 +1,26 @@
+# kustomize/failing payload, next to deployment.yaml. Every Job fails.
+# Expect: suspended in full mode with reconcile disabled, and still suspended
+# after forced reconciles (SC-008).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: failing
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: app
+              image: busybox:1.36.1
+              command: ["sh", "-c", "exit 1"]
+              resources:
+                requests: { cpu: 5m, memory: 8Mi }
+                limits: { memory: 16Mi }

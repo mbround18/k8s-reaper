@@ -24,3 +24,30 @@ spec:
               resources:
                 requests: { cpu: 5m, memory: 8Mi }
                 limits: { memory: 16Mi }
+---
+# cron/flaky: fails on even minutes, succeeds on odd ones, so no streak ever
+# reaches minFailedRuns. Expect: observed at most, never suspended.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: flaky
+  namespace: cron
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: app
+              image: busybox:1.36.1
+              command: ["sh", "-c", "test $(( $(date +%M) % 2 )) -eq 1"]
+              resources:
+                requests: { cpu: 5m, memory: 8Mi }
+                limits: { memory: 16Mi }

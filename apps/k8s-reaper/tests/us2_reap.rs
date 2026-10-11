@@ -14,61 +14,18 @@
 mod common;
 mod full;
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-use full::{FIXTURES, FullMode, NAME, annotation, is_reaped, replicas, state, until};
+use full::{
+    FIXTURES, FullMode, NAME, annotation, force_reconcile, is_reaped, kustomizations, merge,
+    replicas, state, until,
+};
 use k8s_openapi::api::apps::v1::Deployment;
-use kube::api::{DynamicObject, Patch, PatchParams};
+
 use kube::{Api, Client, ResourceExt};
 use reaper_core::record::{
     FLUX_RECONCILE, HELD_FOR, HELMRELEASE, ORIGINAL_REPLICAS, PREVIOUS_RECONCILE, REAPED_AT,
     SUSPENDED_BY_REAPER,
 };
 use serde_json::json;
-
-const REQUESTED_AT: &str = "reconcile.fluxcd.io/requestedAt";
-
-fn kustomizations(client: &Client) -> Api<DynamicObject> {
-    let ar = full::dynamic("kustomize.toolkit.fluxcd.io", "v1", "Kustomization");
-    Api::namespaced_with(client.clone(), "flux-system", &ar)
-}
-
-async fn merge(api: &Api<DynamicObject>, name: &str, patch: serde_json::Value) {
-    api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await
-        .unwrap();
-}
-
-/// `flux reconcile` without the CLI: a new `requestedAt`, then, for the
-/// Kustomization, wait until the controller has handled it. A suspended
-/// HelmRelease never handles it, which is the point of the hold.
-async fn force_reconcile(client: &Client) {
-    let token = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string();
-    let patch = json!({ "metadata": { "annotations": { REQUESTED_AT: token } } });
-    let ks = kustomizations(client);
-    merge(&ks, "dev-kustomize", patch.clone()).await;
-    merge(&full::helm_releases(client), NAME, patch).await;
-
-    let started = Instant::now();
-    loop {
-        let k = ks.get("dev-kustomize").await.unwrap();
-        if k.data["status"]["lastHandledReconcileAt"] == token.as_str() {
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_mins(3),
-            "dev-kustomize never handled the reconcile request: {}",
-            k.data["status"]
-        );
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-    // Give helm-controller the same moment to act, if it were going to.
-    tokio::time::sleep(Duration::from_secs(5)).await;
-}
 
 /// SC-002: every fixture still at 0 and still held.
 async fn assert_held(client: &Client, uid: &str, round: &str) {

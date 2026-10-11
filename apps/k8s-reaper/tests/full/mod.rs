@@ -1,7 +1,10 @@
-//! Shared by the full-mode dev-cluster stories (US2, US3): switching the dev
-//! ReaperConfig to full mode and back, and waiting on the fixtures.
+//! Shared by the full-mode dev-cluster stories (US2, US3, US5): switching the
+//! dev ReaperConfig to full mode and back, and waiting on the fixtures.
 
-use std::time::{Duration, Instant};
+// Each story compiles this module on its own and uses only part of it.
+#![allow(dead_code)]
+
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use k8s_openapi::api::apps::v1::Deployment;
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind, Patch, PatchParams};
@@ -44,6 +47,50 @@ pub fn helm_releases(client: &Client) -> Api<DynamicObject> {
 
 pub fn suspended(hr: &DynamicObject) -> bool {
     hr.data["spec"]["suspend"].as_bool().unwrap_or(false)
+}
+
+pub const REQUESTED_AT: &str = "reconcile.fluxcd.io/requestedAt";
+
+pub fn kustomizations(client: &Client) -> Api<DynamicObject> {
+    let ar = dynamic("kustomize.toolkit.fluxcd.io", "v1", "Kustomization");
+    Api::namespaced_with(client.clone(), "flux-system", &ar)
+}
+
+pub async fn merge(api: &Api<DynamicObject>, name: &str, patch: serde_json::Value) {
+    api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .unwrap();
+}
+
+/// `flux reconcile` without the CLI: a new `requestedAt`, then, for the
+/// Kustomization, wait until the controller has handled it. A suspended
+/// HelmRelease never handles it, which is the point of the hold.
+pub async fn force_reconcile(client: &Client) {
+    let token = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+    let patch = json!({ "metadata": { "annotations": { REQUESTED_AT: token } } });
+    let ks = kustomizations(client);
+    merge(&ks, "dev-kustomize", patch.clone()).await;
+    merge(&helm_releases(client), NAME, patch).await;
+
+    let started = Instant::now();
+    loop {
+        let k = ks.get("dev-kustomize").await.unwrap();
+        if k.data["status"]["lastHandledReconcileAt"] == token.as_str() {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_mins(3),
+            "dev-kustomize never handled the reconcile request: {}",
+            k.data["status"]
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    // Give helm-controller the same moment to act, if it were going to.
+    tokio::time::sleep(Duration::from_secs(5)).await;
 }
 
 /// Polls `ns/crashloop` until `done` holds, failing after `deadline`.
@@ -125,22 +172,30 @@ pub struct FullMode {
 
 impl FullMode {
     pub async fn enter(client: &Client, cycle_interval: &str) -> Self {
+        Self::enter_with(
+            client,
+            &json!({
+                "cycleInterval": cycle_interval,
+                "scope": { "includeNamespaces": ["plain", "kustomize", "helm", "partial"] },
+                "limits": { "maxReapsPerCycle": FIXTURES.len() },
+                // CronJobs are US5's; keep them out of the Deployment stories.
+                "cronJobs": { "enabled": false },
+            }),
+        )
+        .await
+    }
+
+    /// Full mode with `spec` merged over the saved spec.
+    pub async fn enter_with(client: &Client, spec: &Value) -> Self {
         let config = reaper_configs(client).get("default").await.unwrap();
         let saved = config.data["spec"].clone();
         assert_eq!(
             saved["mode"], "report",
             "the dev ReaperConfig should be in report mode before a story"
         );
-        patch_config(
-            client,
-            &json!({
-                "mode": "full",
-                "cycleInterval": cycle_interval,
-                "scope": { "includeNamespaces": ["plain", "kustomize", "helm", "partial"] },
-                "limits": { "maxReapsPerCycle": FIXTURES.len() },
-            }),
-        )
-        .await;
+        let mut spec = spec.clone();
+        spec["mode"] = json!("full");
+        patch_config(client, &spec).await;
         Self { saved }
     }
 }
