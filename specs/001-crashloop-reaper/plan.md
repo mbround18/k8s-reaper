@@ -91,7 +91,8 @@ _Gate evaluated before research and again after design. Both pass._
   - Ports are traits in the core, using native `async fn`, so no runtime is
     needed: `ClusterWriter`, `EventSink`, `Telemetry`. The snapshot comes in as
     plain data.
-  - The adapters are `reaper-kube`, `reaper-flux` and `reaper-observability`.
+  - The adapters are `reaper-kube`, `reaper-flux`, `reaper-observability` and
+    `reaper-notify` (US6).
   - `apps/k8s-reaper` only wires things together.
 - [x] **II. Safe by default.**
   - Default mode is `report`, including when there is no config (FR-026).
@@ -155,7 +156,8 @@ CONTRIBUTING.md               # setup, architecture, decisions, testing, release
 docs/guides/
 ├── getting-started.md        # install via Flux HelmRelease, report mode first
 ├── restoring-a-workload.md   # the one restore action, and "restore then fix"
-└── configuration.md          # ReaperConfig fields, opt-out labels
+├── configuration.md          # ReaperConfig fields, opt-out labels
+└── notifications.md          # channel Secret, providers, reasons (US6)
 
 crates/
 ├── reaper-core/              # PURE: no kube/tokio/clock
@@ -178,11 +180,12 @@ crates/
 │   └── src/
 │       ├── helmrelease.rs    # minimal HelmRelease v2 type + ApiResource
 │       └── holds.rs          # suspend/resume + held-for patches (ClusterWriter part)
-└── reaper-observability/
-    └── src/
-        ├── telemetry.rs      # Telemetry impl: OTel meters + prometheus-client registry
-        ├── tracing.rs        # subscriber, JSON logs, OTLP traces when configured
-        └── http.rs           # axum: /healthz /readyz /metrics
+├── reaper-observability/
+│   └── src/
+│       ├── telemetry.rs      # Telemetry impl: OTel meters + prometheus-client registry
+│       ├── tracing.rs        # subscriber, JSON logs, OTLP traces when configured
+│       └── http.rs           # axum: /healthz /readyz /metrics
+└── reaper-notify/            # US6: channel Secret loader, webhook + SMTP senders, queue worker
 
 apps/
 └── k8s-reaper/               # binary: `run` (default) and `crd` (print CRD YAML)
@@ -192,7 +195,8 @@ apps/
         ├── us2_reap.rs
         ├── us3_restore.rs
         ├── us4_config.rs
-        └── us5_cronjob.rs
+        ├── us5_cronjob.rs
+        └── us6_notify.rs
 
 deploy/dev/                   # k3d config + sample crash-looping Deployments (dev only)
 ```
@@ -201,8 +205,8 @@ deploy/dev/                   # k3d config + sample crash-looping Deployments (d
 
 - One pure core crate holds detection, decision, record encoding, port
   definitions and the runtime-agnostic executor.
-- There are three adapter crates: `reaper-kube`, `reaper-flux` and
-  `reaper-observability`.
+- There are four adapter crates: `reaper-kube`, `reaper-flux`,
+  `reaper-observability` and `reaper-notify`.
 - One binary composes them.
 - The CRD Rust type lives in `reaper-kube`, because it needs `kube::CustomResource`.
   It converts into the core's plain `Config`.

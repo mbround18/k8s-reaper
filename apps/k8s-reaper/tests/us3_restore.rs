@@ -1,7 +1,7 @@
 //! US3 on the dev cluster (quickstart §4, SC-003). Opt-in:
 //!
 //! ```sh
-//! make dev-kind dev-run KUBE_CONTEXT=kind-...   # or make dev-cluster dev-run
+//! make dev-kind image dev-load dev-run KUBE_CONTEXT=kind-...  # or: make dev-cluster && make image dev-load dev-run
 //! make test-integration STORY=us3_restore KUBE_CONTEXT=kind-...
 //! ```
 //!

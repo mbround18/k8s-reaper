@@ -1,8 +1,8 @@
-//! US6 on the k3d dev cluster (SC-009). Opt-in:
+//! US6 on the dev cluster (SC-009). Opt-in:
 //!
 //! ```sh
-//! make dev-cluster dev-push dev-run dev-notify
-//! make test-integration STORY=us6_notify
+//! make dev-kind image dev-load dev-run dev-notify KUBE_CONTEXT=kind-...  # or: make dev-cluster && make image dev-load dev-run dev-notify
+//! make test-integration STORY=us6_notify KUBE_CONTEXT=kind-...
 //! ```
 //!
 //! Needs the reaper running in report mode with the Secret from

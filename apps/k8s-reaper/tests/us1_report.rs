@@ -1,8 +1,8 @@
-//! US1 on the k3d dev cluster (quickstart §1–§2, SC-001). Opt-in:
+//! US1 on the dev cluster (quickstart §1–§2, SC-001). Opt-in:
 //!
 //! ```sh
-//! make dev-cluster dev-push dev-run
-//! make test-integration STORY=us1_report
+//! make dev-kind image dev-load dev-run KUBE_CONTEXT=kind-...  # or: make dev-cluster && make image dev-load dev-run
+//! make test-integration STORY=us1_report KUBE_CONTEXT=kind-...
 //! ```
 //!
 //! Needs the dev fixtures (`deploy/dev/fixtures/`) and the reaper running in
