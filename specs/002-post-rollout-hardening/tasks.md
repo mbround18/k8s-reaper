@@ -132,7 +132,7 @@ namespace leaving scope, both restore.
 
 ### Tests first
 
-- [ ] T136 [P] [US3] `crates/reaper-core/src/decide.rs` tests for data-model.md rule #4 (FR-009):
+- [X] T136 [P] [US3] `crates/reaper-core/src/decide.rs` tests for data-model.md rule #4 (FR-009):
   - two workloads held through one HelmRelease whose hold has `suspended_by_reaper = Some(true)` and whose view is `suspended = false`: both get `Restore(ManualResume)` in one `decide`;
   - their restore actions drop them from `held-for` and contain **no** HelmRelease resume;
   - the last one releases the hold, and `HelmReleaseReleased` follows in the executor;
@@ -141,7 +141,7 @@ namespace leaving scope, both restore.
   - the HelmRelease missing from the snapshot: no restore.
 
   Add an `insta` snapshot of the plan JSON.
-- [ ] T137 [P] [US3] `crates/reaper-core/src/decide.rs` tests for rule #1 (FR-010):
+- [X] T137 [P] [US3] `crates/reaper-core/src/decide.rs` tests for rule #1 (FR-010):
   - a `reaped` workload in a namespace matched by `excludeNamespaces` gets `Restore(OptedOut)` with the Kustomization and HelmRelease releases;
   - the same with `includeNamespaces` set and not matching;
   - a `reaping` record gets the same;
@@ -149,11 +149,11 @@ namespace leaving scope, both restore.
   - the reaper's own namespace with a forged `reaped` record produces no decision;
   - global `Mode::Off`: the executor writes nothing;
   - restores are not counted toward `maxReapsPerCycle` or `maxReaped`.
-- [ ] T138 [P] [US3] Equivalence: add both new fixtures to `crates/reaper-core/tests/equivalence.rs`. Restores run identically in `Report` and `Full`.
+- [X] T138 [P] [US3] Equivalence: add both new fixtures to `crates/reaper-core/tests/equivalence.rs`. Restores run identically in `Report` and `Full`.
 
 ### Implementation
 
-- [ ] T139 [US3] Implement in `crates/reaper-core/src/decide.rs`:
+- [X] T139 [US3] Implement in `crates/reaper-core/src/decide.rs`:
   - in `decide`, replace the `.filter(in_scope)` with a branch:
     - own namespace → skip;
     - out of scope with a `reaping` or `reaped` record → `held_plan` with a forced `RestoreKind::OptedOut`;

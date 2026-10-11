@@ -1,6 +1,7 @@
 //! SC-004: report mode is an honest dry run. For every US1 and US5 fixture, report
 //! and full mode publish the same plan annotation, and report mode writes
-//! nothing but `reaper.boop.ninja/*` metadata (FR-012).
+//! nothing but `reaper.boop.ninja/*` metadata (FR-012). Restores (002 US3)
+//! run identically in both modes.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +10,8 @@ use reaper_core::decide::decide;
 use reaper_core::executor::execute;
 use reaper_core::model::{NsName, PodView, Snapshot, WorkloadKind, WorkloadView};
 use reaper_core::record::{
-    CRASHLOOP_SINCE, FAILED_RUNS, FAILING_SINCE, HEALTHY_SINCE, LAST_FAILED_JOB, PLAN,
+    CRASHLOOP_SINCE, FAILED_RUNS, FAILING_SINCE, HEALTHY_SINCE, HELD_FOR, HELMRELEASE,
+    LAST_FAILED_JOB, ORIGINAL_REPLICAS, PLAN, PREVIOUS_RECONCILE, SUSPENDED_BY_REAPER,
 };
 use reaper_core::testing::{
     Call, FakeEvents, FakeTelemetry, FakeWriter, add_namespace, add_pod, block_on,
@@ -222,4 +224,104 @@ fn report_mode_writes_only_reaper_metadata() {
     for call in &calls {
         assert!(call.only_reaper_metadata(), "{call:?}");
     }
+}
+
+/// 002 US3 (T138): a HelmRelease a person resumed (`helm/app`, holding
+/// `app/db` and `app/web`) and a namespace that left scope (`plain`, holding
+/// `plain/crashloop` through a Kustomization).
+fn letting_go() -> (Snapshot, Config) {
+    let mut snap = snapshot();
+    let reaped = |ns: &str, name: &str| {
+        let mut w = deployment(ns, name);
+        w.state_label = Some("reaped".into());
+        w.spec_replicas = Some(0);
+        let a = &mut w.reaper_annotations;
+        a.insert(CRASHLOOP_SINCE.into(), mins_ago(90).to_string());
+        a.insert(ORIGINAL_REPLICAS.into(), "2".into());
+        w
+    };
+    let mut hr = helm_release("helm", "app");
+    hr.reaper_annotations.insert(
+        HELD_FOR.into(),
+        r#"["Deployment/app/db","Deployment/app/web"]"#.into(),
+    );
+    hr.reaper_annotations
+        .insert(SUSPENDED_BY_REAPER.into(), "true".into());
+    snap.helm_releases.insert(hr.helm_release.clone(), hr);
+    for name in ["db", "web"] {
+        let mut w = reaped("app", name);
+        w.flux.helm_release = Some(NsName::new("helm", "app"));
+        w.reaper_annotations
+            .insert(HELMRELEASE.into(), "helm/app".into());
+        snap.workloads.push(w);
+    }
+    let mut plain = reaped("plain", "crashloop");
+    plain.flux.kustomization = Some(NsName::new("flux-system", "plain"));
+    plain.flux.reconcile_annotation = Some("disabled".into());
+    plain
+        .reaper_annotations
+        .insert(PREVIOUS_RECONCILE.into(), "<none>".into());
+    snap.workloads.push(plain);
+
+    let mut config = Config::default();
+    config.scope.exclude_namespaces = vec!["plain".into()];
+    (snap, config)
+}
+
+#[test]
+fn restores_run_identically_in_report_and_full() {
+    let (snap, config) = letting_go();
+    let plan = decide(&snap, &config);
+    let go = |mode| {
+        let writer = FakeWriter::new();
+        let events = FakeEvents::default();
+        block_on(execute(
+            &snap,
+            &plan,
+            mode,
+            &writer,
+            &events,
+            &FakeTelemetry::default(),
+        ));
+        let notes: Vec<String> = events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| format!("{} {}", e.reason, e.note))
+            .collect();
+        (writer.calls(), notes)
+    };
+    let (report, report_events) = go(Mode::Report);
+    let (full, full_events) = go(Mode::Full);
+    assert_eq!(report, full);
+    assert_eq!(report_events, full_events);
+    // Every held workload is scaled back, and the release let go once.
+    let scaled = report
+        .iter()
+        .filter(|c| matches!(c, Call::Scale { replicas: 2, .. }))
+        .count();
+    assert_eq!(scaled, 3, "{report:#?}");
+    let restored: Vec<_> = report_events
+        .iter()
+        .filter_map(|e| e.strip_prefix("Restored "))
+        .map(|n| n.split(';').next().unwrap())
+        .collect();
+    assert_eq!(
+        restored,
+        ["manual-resume", "manual-resume", "opted-out"],
+        "{report_events:#?}"
+    );
+    assert_eq!(
+        report_events
+            .iter()
+            .filter(|e| e.starts_with("HelmReleaseReleased"))
+            .count(),
+        1
+    );
+    // Resumed by a person: never resumed again.
+    assert!(!report.iter().any(|c| matches!(
+        c,
+        Call::PatchHelmRelease { patch, .. } if patch.suspend.is_some()
+    )));
 }

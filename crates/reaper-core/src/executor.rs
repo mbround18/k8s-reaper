@@ -1385,6 +1385,84 @@ mod tests {
         assert_eq!(r.events.reasons(), Vec::<&str>::new());
     }
 
+    // 002 US3: letting go (T136, T137)
+
+    /// `db` and `web` reaped through helm/web, which a person has resumed.
+    fn resumed_release() -> Snapshot {
+        let mut snap = reaped();
+        let mut db = snap.workloads[0].clone();
+        db.workload.name = "db".into();
+        snap.workloads.push(db);
+        let hr = snap
+            .helm_releases
+            .get_mut(&NsName::new("helm", "web"))
+            .unwrap();
+        hr.suspended = false;
+        hr.reaper_annotations.insert(
+            HELD_FOR.into(),
+            r#"["Deployment/app/db","Deployment/app/web"]"#.into(),
+        );
+        snap
+    }
+
+    #[test]
+    fn a_resumed_release_restores_its_workloads_and_then_is_released() {
+        for mode in [Mode::Report, Mode::Full] {
+            let r = run(&resumed_release(), mode);
+            assert_eq!(
+                r.events.reasons(),
+                ["Restored", "HelmReleaseReleased", "Restored"],
+                "{mode:?}"
+            );
+            for e in r.events.events.lock().unwrap().iter() {
+                if e.reason == "Restored" {
+                    assert!(
+                        e.note.starts_with("manual-resume; 3 replicas"),
+                        "{}",
+                        e.note
+                    );
+                }
+            }
+            let calls = r.writer.calls();
+            let hr: Vec<_> = calls
+                .iter()
+                .filter(|c| matches!(c, Call::PatchHelmRelease { .. }))
+                .map(hr_patch)
+                .collect();
+            assert_eq!(hr.len(), 2, "{calls:#?}");
+            // It is already running: never resumed (or suspended) again.
+            assert!(hr.iter().all(|p| p.suspend.is_none()), "{hr:#?}");
+            assert!(hr[1].annotations.values().all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn global_mode_off_does_not_restore_an_excluded_namespace() {
+        let snap = reaped();
+        let mut config = Config::default();
+        config.scope.exclude_namespaces = vec!["app".into()];
+        let plan = decide(&snap, &config);
+        assert!(matches!(
+            plan.decisions[0].plan,
+            Plan::Restore {
+                kind: RestoreKind::OptedOut,
+                ..
+            }
+        ));
+        let writer = FakeWriter::new();
+        let events = FakeEvents::default();
+        block_on(execute(
+            &snap,
+            &plan,
+            Mode::Off,
+            &writer,
+            &events,
+            &FakeTelemetry::default(),
+        ));
+        assert_eq!(writer.calls(), Vec::<Call>::new());
+        assert_eq!(events.reasons(), Vec::<&str>::new());
+    }
+
     // US5: CronJobs (T087)
 
     /// A CronJob with three failed runs over `minutes`, in `state`.
