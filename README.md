@@ -52,9 +52,54 @@ problems for a person, not for scaling to zero.
 
 ## Install
 
-The chart lives in
-[mbround18/helm-charts](https://github.com/mbround18/helm-charts) under
-`charts/k8s-reaper`. With Flux:
+The chart is published in the Helm repository
+`https://mbround18.github.io/helm-charts/`, from
+[mbround18/helm-charts](https://github.com/mbround18/helm-charts)
+(`charts/k8s-reaper`). With Helm:
+
+```sh
+helm repo add mbround18 https://mbround18.github.io/helm-charts/
+helm install k8s-reaper mbround18/k8s-reaper -n k8s-reaper --create-namespace
+```
+
+With Flux, from the Helm repository:
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: mbround18
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://mbround18.github.io/helm-charts/
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: k8s-reaper
+  namespace: k8s-reaper
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: k8s-reaper
+      version: 0.1.x
+      sourceRef:
+        kind: HelmRepository
+        name: mbround18
+        namespace: flux-system
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  values:
+    reaperConfig:
+      spec:
+        mode: report
+```
+
+Or with Flux from Git:
 
 ```yaml
 apiVersion: helm.toolkit.fluxcd.io/v2

@@ -15,7 +15,12 @@ read what it finds, and then switches it to full mode.
 
 The Helm chart lives in
 [mbround18/helm-charts](https://github.com/mbround18/helm-charts) under
-`charts/k8s-reaper`. Point Flux at the chart repository with a `GitRepository`:
+`charts/k8s-reaper`, and is also published in the Helm repository
+`https://mbround18.github.io/helm-charts/`. To install from the Helm
+repository (a Flux `HelmRepository`, or plain `helm install`), follow
+[Install from the Helm repository](helm-chart.md#install-from-the-helm-repository)
+and come back at [step 2](#2-check-that-it-runs). This guide installs from
+Git. Point Flux at the chart repository with a `GitRepository`:
 
 ```yaml
 apiVersion: source.toolkit.fluxcd.io/v1

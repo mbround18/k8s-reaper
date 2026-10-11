@@ -9,8 +9,70 @@ PrometheusRule are available but off by default. This guide covers installing
 it with Flux or plain Helm, every value, what each template creates, and how to
 upgrade and uninstall it safely.
 
-There is no Helm repository index for this chart. Install it from Git: with a
-Flux `GitRepository`, or with `helm install` from a clone.
+The chart is published in the Helm repository
+`https://mbround18.github.io/helm-charts/`, which is the simplest way to
+install it ([below](#install-from-the-helm-repository)). You can also install
+it from Git: with a Flux `GitRepository` ([section 1](#1-install-with-flux)),
+or with `helm install` from a clone ([section 2](#2-install-with-helm-from-a-clone)).
+
+## Install from the Helm repository
+
+With Helm:
+
+```sh
+helm repo add mbround18 https://mbround18.github.io/helm-charts/
+helm install k8s-reaper mbround18/k8s-reaper -n k8s-reaper --create-namespace
+```
+
+Add `-f my-values.yaml` for your values ([section 3](#3-values)). Helm
+installs the CRD on the first install only ([section 7](#7-crd-upgrades)).
+
+With Flux, point a `HelmRepository` at it and install with a `HelmRelease`.
+The reaper never acts on the namespace it runs in, so give it its own:
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: mbround18
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://mbround18.github.io/helm-charts/
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-reaper
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: k8s-reaper
+  namespace: k8s-reaper
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: k8s-reaper
+      version: 0.1.x
+      sourceRef:
+        kind: HelmRepository
+        name: mbround18
+        namespace: flux-system
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+  values:
+    reaperConfig:
+      spec:
+        mode: report
+```
+
+`version: 0.1.x` takes new patch releases of the chart and nothing newer. As
+with the Git source, keep `install.crds` and `upgrade.crds` at
+`CreateReplace` so a new chart version updates the CRD.
 
 ## 1. Install with Flux
 
@@ -179,8 +241,10 @@ the 128Mi limit on a large cluster.
 
 The full name is `k8s-reaper` for a release called `k8s-reaper`.
 
-The sync-wave annotations are for Argo CD. Flux and Helm ignore them; Helm
-installs the CRD first and orders the rest by kind. The ReaperConfig also
+The sync-wave annotations are a convention of the chart repository, which
+annotates its charts for Argo CD (and whose tests check them). They do nothing
+under Flux or plain Helm: Helm installs the CRD first and orders the rest by
+kind. The ReaperConfig also
 carries `argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true`,
 because its CRD may not exist yet when Argo CD runs a dry run.
 
@@ -252,6 +316,11 @@ The PrometheusRule defines `ReaperCrashLoopPlanned`, `ReaperWorkloadReaped`,
 `up{job="<full name>"}`, the Service name, which is the ServiceMonitor's
 default job label. What each alert means and what to do is in
 [monitoring.md](monitoring.md).
+
+`ReaperDown` fires when the ServiceMonitor is enabled but your Prometheus
+does not select it (its `labels` do not match the Prometheus
+`serviceMonitorSelector`). That is correct: nothing is scraping the reaper.
+Fix the labels rather than silencing the alert.
 
 ## 5. RBAC
 
