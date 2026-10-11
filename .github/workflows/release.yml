@@ -18,7 +18,7 @@ jobs:
       contents: write
       packages: write
       pull-requests: write
-    uses: mbround18/gh-reusable/.github/workflows/docker-release.yaml@main
+    uses: mbround18/gh-reusable/.github/workflows/docker-release.yaml@33b776121b6f2035a57ec618b9e34b826c9f20c1 # main
     with:
       image: mbround18/k8s-reaper
       context: .
