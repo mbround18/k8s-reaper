@@ -801,6 +801,22 @@ mod tests {
     }
 
     #[test]
+    fn a_label_never_raises_the_mode() {
+        let (mut snap, mut d) = looping("web", 12, Some(60));
+        add_namespace(&mut snap, "app", Some("report"));
+        d.mode_label = Some("full".into());
+        assert_eq!(
+            skip_reason(&run(snap, vec![d])),
+            Some(SkipReason::ReportOnlyScope)
+        );
+
+        let (mut snap, mut d) = looping("web", 12, None);
+        add_namespace(&mut snap, "app", Some("off"));
+        d.mode_label = Some("full".into());
+        assert_eq!(run(snap, vec![d]).decisions, Vec::<Decision>::new());
+    }
+
+    #[test]
     fn invalid_mode_label_is_reported_and_ignored() {
         let (mut snap, mut d) = looping("web", 12, Some(60));
         add_namespace(&mut snap, "app", Some("full"));
