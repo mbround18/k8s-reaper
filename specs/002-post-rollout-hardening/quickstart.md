@@ -68,7 +68,10 @@ Run this with a `kubectl port-forward` to port 8080.
 ## 3. Failed record writes are alerted (US2): SC-004
 
 Remove `patch` on deployments from the reaper's ClusterRole in the dev
-deploy only (`deploy/dev/rbac-deny-patch.yaml`), then wait one cycle.
+deploy only (`deploy/dev/rbac-deny-patch.yaml`). The reaper writes a record
+only when it changes, so give it one to write: delete and re-apply
+`deploy/dev/fixtures/plain.yaml`, then wait until it has crash-looped a few
+times (see `deploy/dev/README.md`).
 
 - Expected: `reaper_actions_total{action="record",result="error"}`
   increases.
