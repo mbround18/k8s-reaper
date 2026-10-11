@@ -1,4 +1,4 @@
-//! SC-004: report mode is an honest dry run. For every US1 fixture, report
+//! SC-004: report mode is an honest dry run. For every US1 and US5 fixture, report
 //! and full mode publish the same plan annotation, and report mode writes
 //! nothing but `reaper.boop.ninja/*` metadata (FR-012).
 
@@ -8,11 +8,13 @@ use reaper_core::config::{Config, Mode};
 use reaper_core::decide::decide;
 use reaper_core::executor::execute;
 use reaper_core::model::{NsName, PodView, Snapshot, WorkloadKind, WorkloadView};
-use reaper_core::record::{CRASHLOOP_SINCE, HEALTHY_SINCE, PLAN};
+use reaper_core::record::{
+    CRASHLOOP_SINCE, FAILED_RUNS, FAILING_SINCE, HEALTHY_SINCE, LAST_FAILED_JOB, PLAN,
+};
 use reaper_core::testing::{
     Call, FakeEvents, FakeTelemetry, FakeWriter, add_namespace, add_pod, block_on,
-    crashlooping_container, deployment, healthy_container, helm_release, mins_ago, snapshot,
-    workload,
+    crashlooping_container, cron_job, cron_mut, deployment, failed_job, healthy_container,
+    helm_release, mins_ago, snapshot, succeeded_job, workload,
 };
 
 fn observed(mut w: WorkloadView, minutes: i64) -> WorkloadView {
@@ -31,7 +33,29 @@ fn with_pod(snap: &mut Snapshot, w: &WorkloadView, restarts: u32) {
     );
 }
 
-/// One snapshot holding every US1 situation side by side.
+/// A CronJob whose last `runs.len()` Jobs failed, the given minutes ago.
+fn failing_cron(name: &str, runs: &[i64]) -> WorkloadView {
+    let mut w = cron_job("cron", name);
+    cron_mut(&mut w).jobs = runs
+        .iter()
+        .enumerate()
+        .map(|(i, m)| failed_job(&format!("{name}-{i}"), *m))
+        .collect();
+    w
+}
+
+/// Already observed failing since the first of `runs`, every run counted.
+fn observed_cron(name: &str, runs: &[i64]) -> WorkloadView {
+    let mut w = failing_cron(name, runs);
+    let a = &mut w.reaper_annotations;
+    a.insert(FAILING_SINCE.into(), mins_ago(runs[0]).to_string());
+    a.insert(FAILED_RUNS.into(), runs.len().to_string());
+    a.insert(LAST_FAILED_JOB.into(), format!("{name}-{}", runs.len() - 1));
+    w.state_label = Some("observed".into());
+    w
+}
+
+/// One snapshot holding every US1 and US5 situation side by side.
 fn fixture() -> Snapshot {
     let mut snap = snapshot();
     let mut workloads = Vec::new();
@@ -124,6 +148,15 @@ fn fixture() -> Snapshot {
         containers: vec![crashlooping_container("api", 50)],
     });
 
+    add(&mut snap, failing_cron("fresh", &[30, 20]), None);
+    add(&mut snap, observed_cron("young", &[60, 50, 40]), None);
+    add(&mut snap, observed_cron("nightly", &[500, 400, 300]), None);
+    let mut mended = observed_cron("mended", &[500, 400, 300]);
+    cron_mut(&mut mended)
+        .jobs
+        .push(succeeded_job("mended-3", 5));
+    add(&mut snap, mended, None);
+
     snap.workloads = workloads;
     snap
 }
@@ -166,6 +199,20 @@ fn report_and_full_publish_identical_plans() {
     // The fixture must actually exercise reap and skip plans.
     assert!(plans.len() >= 7, "{plans:#?}");
     assert_eq!(plans, published(&full));
+    let cron: Vec<_> = plans.keys().filter(|k| k.contains("CronJob")).collect();
+    assert_eq!(cron.len(), 1, "{plans:#?}");
+    assert!(cron[0].contains("nightly"), "{cron:?}");
+    // Only the CronJob past both thresholds is suspended.
+    let suspended: Vec<_> = full
+        .calls()
+        .into_iter()
+        .filter(|c| matches!(c, Call::SetCronJobSuspend { suspend: true, .. }))
+        .collect();
+    assert_eq!(suspended.len(), 1, "{suspended:#?}");
+    assert!(
+        format!("{suspended:?}").contains("nightly"),
+        "{suspended:?}"
+    );
 }
 
 #[test]

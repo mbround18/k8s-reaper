@@ -286,6 +286,54 @@ pub struct WorkloadView {
     pub reaper_annotations: BTreeMap<String, String>,
     /// The `reaper.boop.ninja/state` label, raw.
     pub state_label: Option<String>,
+    /// Schedule state and run history; only for a CronJob.
+    pub cron_job: Option<CronJobView>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CronJobView {
+    /// `spec.suspend`.
+    pub suspended: bool,
+    /// `status.lastSuccessfulTime`.
+    pub last_successful_time: Option<Timestamp>,
+    /// Jobs this CronJob controls (controller ownerReference).
+    pub jobs: Vec<JobView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobView {
+    pub name: String,
+    pub outcome: JobOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobOutcome {
+    Running,
+    /// `Complete=True`, finished at `completionTime`.
+    Succeeded {
+        at: Timestamp,
+    },
+    /// `Failed=True`, finished when the condition turned true.
+    Failed {
+        at: Timestamp,
+        reason: Option<String>,
+    },
+}
+
+impl JobView {
+    /// When the Job finished; `None` while it runs.
+    #[must_use]
+    pub fn finished_at(&self) -> Option<Timestamp> {
+        match self.outcome {
+            JobOutcome::Running => None,
+            JobOutcome::Succeeded { at } | JobOutcome::Failed { at, .. } => Some(at),
+        }
+    }
+
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        matches!(self.outcome, JobOutcome::Failed { .. })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

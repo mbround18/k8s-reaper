@@ -1,10 +1,15 @@
-//! Crash-loop detection: container classification (FR-001) and owner
-//! resolution (FR-002).
+//! Crash-loop detection: container classification (FR-001), owner
+//! resolution (FR-002), and CronJob failing streaks (FR-028 to FR-030).
 
 use std::collections::BTreeMap;
 
-use crate::model::{ContainerView, NsName, OwnerRef, PodView, Snapshot, WorkloadKind, WorkloadRef};
+use crate::model::{
+    ContainerView, CronJobView, JobOutcome, NsName, OwnerRef, PodView, Snapshot, WorkloadKind,
+    WorkloadRef,
+};
 use crate::plan::UnsupportedPod;
+use crate::record::WorkloadRecord;
+use crate::time::Timestamp;
 
 const CRASH_LOOP_BACK_OFF: &str = "CrashLoopBackOff";
 
@@ -120,12 +125,90 @@ pub fn group_pods<'a>(
     (by_workload, unsupported)
 }
 
+/// A CronJob's recent runs as the reaper reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobStreak {
+    /// No finished Job to judge by: the record stays as it is.
+    Unknown,
+    /// The most recent finished Job succeeded.
+    Passing,
+    Failing(Streak),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Streak {
+    /// Completion time of the first failed Job after the last success.
+    pub since: Timestamp,
+    /// Distinct failed Jobs in the streak, including pruned ones counted
+    /// before.
+    pub failed_runs: u32,
+    pub last_failed_job: String,
+    pub last_failure_reason: Option<String>,
+}
+
+/// Reads the streak from the Jobs still listed and what `record` counted
+/// before. Running Jobs are ignored. Jobs are pruned oldest first, so once
+/// the last counted Job is gone every listed failure is a new one.
+#[must_use]
+pub fn job_streak(cron: &CronJobView, record: &WorkloadRecord) -> JobStreak {
+    let mut finished: Vec<_> = cron
+        .jobs
+        .iter()
+        .filter_map(|j| Some((j.finished_at()?, j)))
+        .collect();
+    finished.sort_by(|(ta, a), (tb, b)| ta.cmp(tb).then_with(|| a.name.cmp(&b.name)));
+    let Some((_, latest)) = finished.last() else {
+        return JobStreak::Unknown;
+    };
+    if !latest.failed() {
+        return JobStreak::Passing;
+    }
+    let last_success = finished
+        .iter()
+        .filter(|(_, j)| !j.failed())
+        .map(|(t, _)| *t)
+        .max()
+        .max(cron.last_successful_time);
+    let after_success = |t: Timestamp| last_success.is_none_or(|s| t > s);
+    let failed: Vec<_> = finished
+        .iter()
+        .filter(|(t, j)| j.failed() && after_success(*t))
+        .collect();
+    let (Some((first_at, _)), Some((_, last))) = (failed.first(), failed.last()) else {
+        return JobStreak::Passing;
+    };
+
+    // The recorded streak holds unless a success came after it began.
+    let (since, counted, new) = match record.failing_since.filter(|t| after_success(*t)) {
+        Some(since) => {
+            let seen = record
+                .last_failed_job
+                .as_deref()
+                .and_then(|name| failed.iter().position(|(_, j)| j.name == name));
+            let new = seen.map_or(&failed[..], |i| &failed[i + 1..]);
+            (since, record.failed_runs.unwrap_or(0), new)
+        }
+        None => (*first_at, 0, &failed[..]),
+    };
+    let new = u32::try_from(new.len()).unwrap_or(u32::MAX);
+    JobStreak::Failing(Streak {
+        since,
+        failed_runs: counted.saturating_add(new),
+        last_failed_job: last.name.clone(),
+        last_failure_reason: match &last.outcome {
+            JobOutcome::Failed { reason, .. } => reason.clone(),
+            _ => None,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Termination;
     use crate::testing::{
-        add_pod, crashlooping_container, deployment, healthy_container, snapshot, workload,
+        add_pod, crashlooping_container, deployment, failed_job, healthy_container, mins_ago,
+        running_job, snapshot, succeeded_job, workload,
     };
 
     fn terminated(exit_code: i32, reason: &str) -> ContainerView {
@@ -302,5 +385,129 @@ mod tests {
         };
         assert_eq!(healthy.worst().map(|(_, c)| c.restart_count), Some(50));
         assert!(!healthy.crash_looping());
+    }
+
+    // US5: CronJob streaks (T080)
+
+    fn cron(jobs: Vec<crate::model::JobView>) -> CronJobView {
+        CronJobView {
+            jobs,
+            ..CronJobView::default()
+        }
+    }
+
+    fn failing(streak: JobStreak) -> Streak {
+        match streak {
+            JobStreak::Failing(s) => s,
+            other => panic!("not failing: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_streak_starts_at_the_first_failure_after_the_last_success() {
+        let mut c = cron(vec![
+            failed_job("j-1", 50),
+            succeeded_job("j-2", 40),
+            failed_job("j-4", 20),
+            failed_job("j-3", 30),
+            failed_job("j-5", 10),
+        ]);
+        c.last_successful_time = Some(mins_ago(40));
+        let s = failing(job_streak(&c, &WorkloadRecord::default()));
+        assert_eq!(s.since, mins_ago(30));
+        assert_eq!(s.failed_runs, 3);
+        assert_eq!(s.last_failed_job, "j-5");
+        assert_eq!(
+            s.last_failure_reason.as_deref(),
+            Some("BackoffLimitExceeded")
+        );
+    }
+
+    #[test]
+    fn last_successful_time_bounds_the_streak_when_the_success_was_pruned() {
+        let mut c = cron(vec![failed_job("j-1", 50), failed_job("j-3", 10)]);
+        c.last_successful_time = Some(mins_ago(30));
+        let s = failing(job_streak(&c, &WorkloadRecord::default()));
+        assert_eq!((s.since, s.failed_runs), (mins_ago(10), 1));
+    }
+
+    #[test]
+    fn running_jobs_are_ignored() {
+        let c = cron(vec![failed_job("j-1", 10), running_job("j-2")]);
+        let s = failing(job_streak(&c, &WorkloadRecord::default()));
+        assert_eq!(s.last_failed_job, "j-1");
+        assert_eq!(
+            job_streak(&cron(vec![running_job("j-1")]), &WorkloadRecord::default()),
+            JobStreak::Unknown
+        );
+        assert_eq!(
+            job_streak(&cron(Vec::new()), &WorkloadRecord::default()),
+            JobStreak::Unknown
+        );
+    }
+
+    #[test]
+    fn a_success_ends_the_streak() {
+        let c = cron(vec![failed_job("j-1", 20), succeeded_job("j-2", 10)]);
+        assert_eq!(
+            job_streak(&c, &WorkloadRecord::default()),
+            JobStreak::Passing
+        );
+    }
+
+    fn recorded(since: i64, runs: u32, last: &str) -> WorkloadRecord {
+        WorkloadRecord {
+            failing_since: Some(mins_ago(since)),
+            failed_runs: Some(runs),
+            last_failed_job: Some(last.into()),
+            ..WorkloadRecord::default()
+        }
+    }
+
+    #[test]
+    fn a_job_is_counted_once_through_last_failed_job() {
+        let c = cron(vec![failed_job("j-6", 20), failed_job("j-7", 10)]);
+        // j-6 was counted last cycle.
+        let s = failing(job_streak(&c, &recorded(300, 6, "j-6")));
+        assert_eq!((s.since, s.failed_runs), (mins_ago(300), 7));
+        assert_eq!(s.last_failed_job, "j-7");
+        // Nothing new.
+        let s = failing(job_streak(&c, &recorded(300, 7, "j-7")));
+        assert_eq!(s.failed_runs, 7);
+    }
+
+    #[test]
+    fn once_the_last_counted_job_is_pruned_every_listed_failure_is_new() {
+        let c = cron(vec![failed_job("j-8", 20), failed_job("j-9", 10)]);
+        let s = failing(job_streak(&c, &recorded(300, 7, "j-7")));
+        assert_eq!(s.failed_runs, 9);
+    }
+
+    #[test]
+    fn a_success_missed_between_cycles_starts_a_new_streak() {
+        let mut c = cron(vec![failed_job("j-9", 10)]);
+        c.last_successful_time = Some(mins_ago(15));
+        let s = failing(job_streak(&c, &recorded(300, 7, "j-7")));
+        assert_eq!((s.since, s.failed_runs), (mins_ago(10), 1));
+    }
+
+    #[test]
+    fn job_pods_never_count_as_crash_loops() {
+        let mut snap = snapshot();
+        let c = workload(WorkloadKind::CronJob, "app", "ingest");
+        snap.pods.push(PodView {
+            namespace: "app".into(),
+            name: "ingest-1-abc".into(),
+            owner: Some(OwnerRef {
+                kind: "Job".into(),
+                name: "ingest-1".into(),
+                controller: true,
+            }),
+            containers: vec![crashlooping_container("main", 40)],
+        });
+        snap.workloads.push(c);
+        let (by_workload, unsupported) = group_pods(&snap, |_| true);
+        assert!(by_workload.is_empty());
+        assert_eq!(unsupported, Vec::<UnsupportedPod>::new());
     }
 }

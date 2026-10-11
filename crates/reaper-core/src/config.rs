@@ -156,6 +156,10 @@ const DAY: u64 = 24 * HOUR;
 pub const CRASH_LOOP_DURATION_RANGE: (u64, u64) = (5 * MINUTE, 7 * DAY);
 /// Valid range of `detection.minRestarts` (and its override).
 pub const MIN_RESTARTS_RANGE: (u32, u32) = (1, 10_000);
+/// Valid range, in seconds, of `cronJobs.failingDuration` (and its override).
+pub const FAILING_DURATION_RANGE: (u64, u64) = (10 * MINUTE, 7 * DAY);
+/// Valid range of `cronJobs.minFailedRuns` (and its override).
+pub const MIN_FAILED_RUNS_RANGE: (u32, u32) = (1, 1000);
 
 /// Configuration as it arrives from outside (the CRD spec): every field
 /// optional, durations as strings. `Config::from_raw` fills defaults and
@@ -276,14 +280,14 @@ impl Config {
             &mut errors,
             "spec.cronJobs.failingDuration",
             raw.cron_jobs_failing_duration.as_deref(),
-            (10 * MINUTE, 7 * DAY),
+            FAILING_DURATION_RANGE,
             &mut c.cron_jobs.failing_duration,
         );
         int_field(
             &mut errors,
             "spec.cronJobs.minFailedRuns",
             raw.cron_jobs_min_failed_runs,
-            (1, 1000),
+            MIN_FAILED_RUNS_RANGE,
             &mut c.cron_jobs.min_failed_runs,
         );
 

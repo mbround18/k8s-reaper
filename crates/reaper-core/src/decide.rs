@@ -9,25 +9,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::config::{
-    CRASH_LOOP_DURATION_RANGE, Config, MIN_RESTARTS_RANGE, Mode, parse_mode_override,
+    CRASH_LOOP_DURATION_RANGE, Config, FAILING_DURATION_RANGE, MIN_FAILED_RUNS_RANGE,
+    MIN_RESTARTS_RANGE, Mode, parse_mode_override,
 };
-use crate::detect::{WorkloadPods, group_pods};
+use crate::detect::{JobStreak, WorkloadPods, group_pods, job_streak};
 use crate::glob::any_matches;
 use crate::model::{
-    NsName, ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadRef, WorkloadView,
+    CronJobView, NsName, ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadRef, WorkloadView,
 };
 use crate::plan::{
     Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, RestoreKind, SkipReason, StaleHold,
 };
 use crate::record::{
-    CRASHLOOP_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold, MIN_RESTARTS, MODE_KEY, RESTORE,
-    State, WorkloadRecord,
+    CRASHLOOP_DURATION, FAILING_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold,
+    MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE, State, WorkloadRecord,
 };
 use crate::time::parse_duration;
 
 /// A change to this workload should start a cycle now rather than at the
-/// next tick (T054): a person asked for a restore, or scaled a reaped
-/// workload back up.
+/// next tick (T054, T088): a person asked for a restore, scaled a reaped
+/// workload back up, or resumed a reaped CronJob.
 #[must_use]
 pub fn wants_immediate_cycle(w: &WorkloadView) -> bool {
     let restore = w
@@ -35,7 +36,16 @@ pub fn wants_immediate_cycle(w: &WorkloadView) -> bool {
         .get(RESTORE)
         .is_some_and(|v| !v.is_empty());
     let reaped = w.state_label.as_deref().and_then(|s| s.parse().ok()) == Some(State::Reaped);
-    restore || (reaped && w.spec_replicas.is_some_and(|n| n > 0))
+    restore || (reaped && brought_back(w))
+}
+
+/// A person undid the reap: scaled the workload up, or unsuspended the
+/// CronJob.
+fn brought_back(w: &WorkloadView) -> bool {
+    match &w.cron_job {
+        Some(cron) => !cron.suspended,
+        None => w.spec_replicas.is_some_and(|n| n > 0),
+    }
 }
 
 /// Decides every in-scope workload. Decisions come back longest crash-looping
@@ -50,12 +60,14 @@ pub fn decide(snap: &Snapshot, config: &Config) -> CyclePlan {
         .workloads
         .iter()
         .filter(|w| in_scope(&w.workload.namespace))
-        // CronJobs are decided from Jobs, not pods (US5).
-        .filter(|w| w.workload.kind != WorkloadKind::CronJob)
         .map(|w| {
             let mode = label_mode(snap, w, &mut invalid);
             let thresholds = Thresholds::for_workload(config, w, &mut invalid);
-            decide_workload(snap, config, w, pods.get(&w.workload), mode, &thresholds)
+            match &w.cron_job {
+                // CronJobs are decided from Jobs, not pods (US5).
+                Some(cron) => decide_cron_job(snap, config, w, cron, mode, &thresholds),
+                None => decide_workload(snap, config, w, pods.get(&w.workload), mode, &thresholds),
+            }
         })
         .filter(|d| d.plan != Plan::Nothing)
         .collect();
@@ -194,6 +206,8 @@ fn label_mode(snap: &Snapshot, w: &WorkloadView, invalid: &mut BTreeSet<InvalidS
 struct Thresholds {
     crash_loop_duration: Duration,
     min_restarts: u32,
+    failing_duration: Duration,
+    min_failed_runs: u32,
 }
 
 impl Thresholds {
@@ -210,30 +224,49 @@ impl Thresholds {
             });
         };
         let get = |key: &str| w.reaper_annotations.get(key);
-
-        let (min_secs, max_secs) = CRASH_LOOP_DURATION_RANGE;
-        let duration = get(CRASHLOOP_DURATION).and_then(|v| match parse_duration(v) {
-            Ok(d) if (min_secs..=max_secs).contains(&d.as_secs()) => Some(d),
-            _ => {
-                bad(CRASHLOOP_DURATION, v);
-                None
-            }
-        });
-        let (min_n, max_n) = MIN_RESTARTS_RANGE;
-        let restarts = get(MIN_RESTARTS).and_then(|v| match v.parse::<u32>() {
-            Ok(n) if (min_n..=max_n).contains(&n) => Some(n),
-            _ => {
-                bad(MIN_RESTARTS, v);
-                None
-            }
-        });
-
-        let global = &config.detection;
+        // An override only raises the global value; one out of range is
+        // reported and ignored.
+        let mut duration = |key: &str, (min, max): (u64, u64), global: Duration| {
+            get(key).map_or(global, |v| match parse_duration(v) {
+                Ok(d) if (min..=max).contains(&d.as_secs()) => d.max(global),
+                _ => {
+                    bad(key, v);
+                    global
+                }
+            })
+        };
+        let crash_loop_duration = duration(
+            CRASHLOOP_DURATION,
+            CRASH_LOOP_DURATION_RANGE,
+            config.detection.crash_loop_duration,
+        );
+        let failing_duration = duration(
+            FAILING_DURATION,
+            FAILING_DURATION_RANGE,
+            config.cron_jobs.failing_duration,
+        );
+        let mut count = |key: &str, (min, max): (u32, u32), global: u32| {
+            get(key).map_or(global, |v| match v.parse::<u32>() {
+                Ok(n) if (min..=max).contains(&n) => n.max(global),
+                _ => {
+                    bad(key, v);
+                    global
+                }
+            })
+        };
         Thresholds {
-            crash_loop_duration: duration.map_or(global.crash_loop_duration, |d| {
-                d.max(global.crash_loop_duration)
-            }),
-            min_restarts: restarts.map_or(global.min_restarts, |n| n.max(global.min_restarts)),
+            crash_loop_duration,
+            min_restarts: count(
+                MIN_RESTARTS,
+                MIN_RESTARTS_RANGE,
+                config.detection.min_restarts,
+            ),
+            failing_duration,
+            min_failed_runs: count(
+                MIN_FAILED_RUNS,
+                MIN_FAILED_RUNS_RANGE,
+                config.cron_jobs.min_failed_runs,
+            ),
         }
     }
 }
@@ -314,21 +347,94 @@ fn decide_workload(
     decision(plan, Some(since), healthy_since, evidence)
 }
 
+/// A CronJob, decided from its Jobs (FR-028 to FR-033). Like any workload
+/// once held; otherwise failing runs take the place of a crash loop, and a
+/// success clears state at once, with no recovery window.
+fn decide_cron_job(
+    snap: &Snapshot,
+    config: &Config,
+    w: &WorkloadView,
+    cron: &CronJobView,
+    mode: Mode,
+    thresholds: &Thresholds,
+) -> Decision {
+    let (record, _) = WorkloadRecord::decode(&w.reaper_annotations, w.state_label.as_deref());
+    let decision = |plan, since, evidence| Decision {
+        workload: w.workload.clone(),
+        plan,
+        since,
+        healthy_since: None,
+        evidence,
+    };
+    let has_state = record.state.is_some() || record.failing_since.is_some();
+
+    match record.state {
+        // Restore keeps working with `cronJobs.enabled: false` (FR-033).
+        Some(State::Reaped | State::Reaping) => {
+            let plan = held_plan(snap, w, &record, mode);
+            return decision(plan, record.failing_since, None);
+        }
+        _ if record.restore && mode != Mode::Off => {
+            return decision(Plan::RestoreIgnored, None, None);
+        }
+        _ => {}
+    }
+    // Suspended by someone else: never a candidate (FR-031).
+    if mode == Mode::Off || !config.cron_jobs.enabled || cron.suspended {
+        let plan = if has_state {
+            Plan::Forget
+        } else {
+            Plan::Nothing
+        };
+        return decision(plan, None, None);
+    }
+
+    let streak = match job_streak(cron, &record) {
+        JobStreak::Unknown => return decision(Plan::Nothing, None, None),
+        JobStreak::Passing => {
+            let plan = if has_state {
+                Plan::Recover
+            } else {
+                Plan::Nothing
+            };
+            return decision(plan, None, None);
+        }
+        JobStreak::Failing(streak) => streak,
+    };
+    let is_candidate = snap
+        .now
+        .elapsed_at_least(streak.since, thresholds.failing_duration)
+        && streak.failed_runs >= thresholds.min_failed_runs;
+    let plan = if is_candidate {
+        candidate_plan(snap, config, w, mode)
+    } else {
+        Plan::Observe
+    };
+    let evidence = Evidence::JobFailures {
+        failed_runs: streak.failed_runs,
+        last_failed_job: streak.last_failed_job,
+        last_failure_reason: streak.last_failure_reason,
+    };
+    decision(plan, Some(streak.since), Some(evidence))
+}
+
 fn candidate_plan(snap: &Snapshot, config: &Config, w: &WorkloadView, mode: Mode) -> Plan {
     let skip = |reason, would| Plan::Skip { reason, would };
     if w.workload.kind == WorkloadKind::DaemonSet {
         return skip(SkipReason::CannotScaleToZero, Vec::new());
     }
     let would = reap_actions(snap, w);
+    // Neither an autoscaler nor available replicas apply to a CronJob.
+    let scalable = w.cron_job.is_none();
     let flux_disabled = (w.flux.kustomization.is_some() && !config.flux.kustomize)
         || (w.flux.helm_release.is_some() && !config.flux.helm_release);
     let reason = if w.has_controller_owner {
         Some(SkipReason::ManagedByController)
-    } else if snap.keda_targets.contains(&w.workload) {
+    } else if scalable && snap.keda_targets.contains(&w.workload) {
         Some(SkipReason::ManagedByAutoscaler)
     } else if mode < Mode::Full || flux_disabled {
         Some(SkipReason::ReportOnlyScope)
-    } else if w.available_replicas > 0 {
+    } else if scalable && w.available_replicas > 0 {
         Some(SkipReason::PartiallyAvailable)
     } else {
         None
@@ -340,16 +446,21 @@ fn candidate_plan(snap: &Snapshot, config: &Config, w: &WorkloadView, mode: Mode
 }
 
 /// A workload the reaper is reaping or has reaped (research R6): restore it
-/// when asked to, when opted out or when a person scaled it up after the
-/// reap; otherwise finish an interrupted reap, or keep holding it.
+/// when asked to, when opted out or when a person scaled it up (or resumed
+/// the CronJob) after the reap; otherwise finish an interrupted reap, or keep
+/// holding it.
 fn held_plan(snap: &Snapshot, w: &WorkloadView, record: &WorkloadRecord, mode: Mode) -> Plan {
     let reaped = record.state == Some(State::Reaped);
     let kind = if mode == Mode::Off {
         Some(RestoreKind::OptedOut)
     } else if record.restore {
         Some(RestoreKind::Requested)
-    } else if reaped && w.spec_replicas.is_some_and(|n| n > 0) {
-        Some(RestoreKind::ManualScaleUp)
+    } else if reaped && brought_back(w) {
+        Some(if w.cron_job.is_some() {
+            RestoreKind::ManualResume
+        } else {
+            RestoreKind::ManualScaleUp
+        })
     } else {
         None
     };
@@ -399,10 +510,17 @@ fn restore_actions(
     }
     // A person who scaled it up chose the replicas; otherwise put back what
     // was there (1 if that was never recorded). Already there means a crash
-    // between restore steps: just finish.
-    let target = record.original_replicas.unwrap_or(1);
-    if kind != RestoreKind::ManualScaleUp && w.spec_replicas != Some(target) {
-        actions.push(Action::ScaleTo { replicas: target });
+    // between restore steps: just finish. Likewise for a CronJob a person
+    // already resumed.
+    if let Some(cron) = &w.cron_job {
+        if cron.suspended {
+            actions.push(Action::ResumeCronJob);
+        }
+    } else {
+        let target = record.original_replicas.unwrap_or(1);
+        if kind != RestoreKind::ManualScaleUp && w.spec_replicas != Some(target) {
+            actions.push(Action::ScaleTo { replicas: target });
+        }
     }
     actions.push(Action::ClearReaperState {
         restore_reconcile: record.previous_reconcile.clone(),
@@ -434,8 +552,10 @@ fn remaining_reap_actions(
             actions.push(hold_action(snap, hr));
         }
     }
-    if w.spec_replicas != Some(0) {
-        actions.push(Action::ScaleTo { replicas: 0 });
+    match &w.cron_job {
+        Some(cron) if !cron.suspended => actions.push(Action::SuspendCronJob),
+        None if w.spec_replicas != Some(0) => actions.push(Action::ScaleTo { replicas: 0 }),
+        _ => {}
     }
     actions.push(Action::MarkReaped);
     actions
@@ -458,7 +578,7 @@ fn hold_action(snap: &Snapshot, hr: &NsName) -> Action {
 }
 
 /// Every reap step for a workload nothing has been done to yet (research R6):
-/// record, block Flux, scale, mark.
+/// record, block Flux, scale (or suspend), mark.
 fn reap_actions(snap: &Snapshot, w: &WorkloadView) -> Vec<Action> {
     let mut actions = vec![Action::RecordReap {
         original_replicas: w.spec_replicas,
@@ -469,7 +589,11 @@ fn reap_actions(snap: &Snapshot, w: &WorkloadView) -> Vec<Action> {
     if let Some(hr) = &w.flux.helm_release {
         actions.push(hold_action(snap, hr));
     }
-    actions.push(Action::ScaleTo { replicas: 0 });
+    actions.push(if w.cron_job.is_some() {
+        Action::SuspendCronJob
+    } else {
+        Action::ScaleTo { replicas: 0 }
+    });
     actions.push(Action::MarkReaped);
     actions
 }
@@ -489,12 +613,12 @@ mod tests {
     use super::*;
     use crate::model::{NsName, WorkloadRef};
     use crate::record::{
-        CRASHLOOP_SINCE, HEALTHY_SINCE, HELMRELEASE, ORIGINAL_REPLICAS, PREVIOUS_RECONCILE,
-        PreviousReconcile,
+        CRASHLOOP_SINCE, FAILING_SINCE, HEALTHY_SINCE, HELMRELEASE, ORIGINAL_REPLICAS,
+        PREVIOUS_RECONCILE, PreviousReconcile,
     };
     use crate::testing::{
-        NOW, add_namespace, add_pod, crashlooping_container, deployment, healthy_container,
-        helm_release, mins_ago, snapshot, workload,
+        NOW, add_namespace, add_pod, crashlooping_container, cron_job, cron_mut, deployment,
+        failed_job, healthy_container, helm_release, mins_ago, snapshot, succeeded_job, workload,
     };
 
     /// A Deployment whose pod crash-loops with `restarts`, first observed
@@ -1266,5 +1390,263 @@ mod tests {
         assert!(wants_immediate_cycle(&w));
         w.state_label = Some("reaping".into());
         assert!(!wants_immediate_cycle(&w));
+    }
+
+    // US5: CronJobs (T081)
+
+    /// A CronJob whose Jobs failed `failed` minutes ago, never observed.
+    fn failing_cron(name: &str, failed: &[i64]) -> WorkloadView {
+        let mut c = cron_job("app", name);
+        cron_mut(&mut c).jobs = failed
+            .iter()
+            .enumerate()
+            .map(|(i, m)| failed_job(&format!("{name}-{i}"), *m))
+            .collect();
+        c
+    }
+
+    /// A CronJob the reaper holds in `state`; `suspended` as given.
+    fn held_cron(state: &str, suspended: bool) -> WorkloadView {
+        let mut c = failing_cron("ingest", &[400, 300, 200]);
+        c.state_label = Some(state.into());
+        c.reaper_annotations
+            .insert(FAILING_SINCE.into(), mins_ago(400).to_string());
+        cron_mut(&mut c).suspended = suspended;
+        c
+    }
+
+    fn cron_plan(w: WorkloadView) -> Plan {
+        reap_of(&run(snapshot(), vec![w]), "ingest")
+    }
+
+    fn cron_reap() -> Vec<Action> {
+        vec![
+            Action::RecordReap {
+                original_replicas: None,
+            },
+            Action::SuspendCronJob,
+            Action::MarkReaped,
+        ]
+    }
+
+    #[test]
+    fn cron_candidate_at_exactly_the_duration_and_runs() {
+        let p = run(snapshot(), vec![failing_cron("ingest", &[360, 300, 240])]);
+        let d = only(&p);
+        assert_eq!(
+            d.plan,
+            Plan::Reap {
+                actions: cron_reap()
+            }
+        );
+        assert_eq!(d.since, Some(mins_ago(360)));
+        assert_eq!(
+            d.evidence,
+            Some(Evidence::JobFailures {
+                failed_runs: 3,
+                last_failed_job: "ingest-2".into(),
+                last_failure_reason: Some("BackoffLimitExceeded".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn cron_below_either_threshold_is_observed() {
+        assert_eq!(
+            cron_plan(failing_cron("ingest", &[359, 300, 240])),
+            Plan::Observe
+        );
+        // Two runs over three days.
+        assert_eq!(
+            cron_plan(failing_cron("ingest", &[3 * 24 * 60, 10])),
+            Plan::Observe
+        );
+    }
+
+    #[test]
+    fn cron_overrides_raise_the_thresholds() {
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        c.reaper_annotations
+            .insert(MIN_FAILED_RUNS.into(), "4".into());
+        assert_eq!(cron_plan(c), Plan::Observe);
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        c.reaper_annotations
+            .insert(FAILING_DURATION.into(), "7h".into());
+        assert_eq!(cron_plan(c), Plan::Observe);
+    }
+
+    #[test]
+    fn cron_suspended_by_someone_else_is_never_a_candidate() {
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        cron_mut(&mut c).suspended = true;
+        assert_eq!(
+            run(snapshot(), vec![c.clone()]).decisions,
+            Vec::<Decision>::new()
+        );
+        // Observed before: state is cleared.
+        c.state_label = Some("candidate".into());
+        c.reaper_annotations
+            .insert(FAILING_SINCE.into(), mins_ago(400).to_string());
+        assert_eq!(cron_plan(c), Plan::Forget);
+    }
+
+    #[test]
+    fn cron_success_clears_state_at_once() {
+        let mut c = failing_cron("ingest", &[400, 300]);
+        cron_mut(&mut c).jobs.push(succeeded_job("ingest-9", 1));
+        c.state_label = Some("observed".into());
+        c.reaper_annotations
+            .insert(FAILING_SINCE.into(), mins_ago(400).to_string());
+        assert_eq!(cron_plan(c), Plan::Recover);
+    }
+
+    #[test]
+    fn cron_skip_reasons_that_apply_and_those_that_never_do() {
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        c.has_controller_owner = true;
+        assert_eq!(
+            skip_of(&cron_plan(c)),
+            Some(SkipReason::ManagedByController)
+        );
+
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        c.mode_label = Some("report".into());
+        assert_eq!(skip_of(&cron_plan(c)), Some(SkipReason::ReportOnlyScope));
+
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        c.mode_label = Some("off".into());
+        assert_eq!(run(snapshot(), vec![c]).decisions, Vec::<Decision>::new());
+
+        let mut snap = snapshot();
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        c.available_replicas = 1;
+        snap.keda_targets.insert(c.workload.clone());
+        snap.workloads = vec![c];
+        let p = decide(&snap, &Config::default());
+        assert_eq!(
+            reap_of(&p, "ingest"),
+            Plan::Reap {
+                actions: cron_reap()
+            }
+        );
+    }
+
+    #[test]
+    fn cron_shares_the_limits_with_deployments() {
+        let mut snap = snapshot();
+        let web = add_looping(&mut snap, "web", 60);
+        snap.workloads = vec![web, failing_cron("ingest", &[400, 300, 240])];
+        let p = decide(&snap, &Config::default());
+        // The CronJob has failed longer, so it goes first.
+        assert!(matches!(reap_of(&p, "ingest"), Plan::Reap { .. }));
+        assert_eq!(skip_of(&reap_of(&p, "web")), Some(SkipReason::RateLimited));
+
+        snap.workloads = vec![
+            held("old", "reaped", 0),
+            failing_cron("ingest", &[400, 300, 240]),
+        ];
+        let mut config = Config::default();
+        config.limits.max_reaped = 1;
+        let p = decide(&snap, &config);
+        assert_eq!(
+            skip_of(&reap_of(&p, "ingest")),
+            Some(SkipReason::ReapCeilingReached)
+        );
+    }
+
+    #[test]
+    fn cron_flux_is_held_as_for_deployments() {
+        let mut snap = snapshot();
+        let mut c = failing_cron("ingest", &[400, 300, 240]);
+        c.flux.kustomization = Some(NsName::new("flux-system", "apps"));
+        c.flux.helm_release = Some(NsName::new("app", "ingest"));
+        snap.helm_releases
+            .insert(NsName::new("app", "ingest"), helm_release("app", "ingest"));
+        snap.workloads = vec![c];
+        let p = decide(&snap, &Config::default());
+        assert_eq!(
+            reap_of(&p, "ingest"),
+            Plan::Reap {
+                actions: vec![
+                    Action::RecordReap {
+                        original_replicas: None
+                    },
+                    Action::DisableKustomizeReconcile(
+                        WorkloadRef::new(WorkloadKind::CronJob, "app", "ingest").object_ref()
+                    ),
+                    Action::HoldHelmRelease {
+                        helm_release: NsName::new("app", "ingest"),
+                        suspend: true,
+                        disable_reconcile: false,
+                    },
+                    Action::SuspendCronJob,
+                    Action::MarkReaped,
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn cron_interrupted_reap_resumes_from_what_is_visible() {
+        assert_eq!(
+            cron_plan(held_cron("reaping", false)),
+            Plan::Reap {
+                actions: vec![Action::SuspendCronJob, Action::MarkReaped]
+            }
+        );
+        assert_eq!(
+            cron_plan(held_cron("reaping", true)),
+            Plan::Reap {
+                actions: vec![Action::MarkReaped]
+            }
+        );
+        assert_eq!(cron_plan(held_cron("reaped", true)), Plan::Held);
+    }
+
+    #[test]
+    fn cron_restore_annotation_resumes_and_clears() {
+        let mut c = held_cron("reaped", true);
+        c.reaper_annotations.insert(RESTORE.into(), "true".into());
+        let (kind, actions) = restore_of(&run(snapshot(), vec![c]), "ingest");
+        assert_eq!(kind, RestoreKind::Requested);
+        assert_eq!(
+            actions,
+            [
+                Action::ResumeCronJob,
+                Action::ClearReaperState {
+                    restore_reconcile: None
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn cron_manual_resume_is_a_restore() {
+        let c = held_cron("reaped", false);
+        assert!(wants_immediate_cycle(&c));
+        assert!(!wants_immediate_cycle(&held_cron("reaped", true)));
+        let (kind, actions) = restore_of(&run(snapshot(), vec![c]), "ingest");
+        assert_eq!(kind, RestoreKind::ManualResume);
+        assert_eq!(
+            actions,
+            [Action::ClearReaperState {
+                restore_reconcile: None
+            }]
+        );
+    }
+
+    #[test]
+    fn cron_disabled_stops_observation_but_not_restore() {
+        let mut config = Config::default();
+        config.cron_jobs.enabled = false;
+        let mut snap = snapshot();
+        snap.workloads = vec![failing_cron("ingest", &[400, 300, 240])];
+        assert_eq!(decide(&snap, &config).decisions, Vec::<Decision>::new());
+
+        let mut c = held_cron("reaped", true);
+        c.reaper_annotations.insert(RESTORE.into(), "true".into());
+        snap.workloads = vec![c];
+        let p = decide(&snap, &config);
+        assert_eq!(restore_of(&p, "ingest").0, RestoreKind::Requested);
     }
 }

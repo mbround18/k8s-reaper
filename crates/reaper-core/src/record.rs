@@ -175,6 +175,11 @@ pub struct WorkloadRecord {
     pub reaped_at: Option<Timestamp>,
     /// `restore` is set to a non-empty value.
     pub restore: bool,
+    /// CronJob only: start of the failing streak, distinct failed Jobs
+    /// counted, and the last one counted (contracts/annotations.md).
+    pub failing_since: Option<Timestamp>,
+    pub failed_runs: Option<u32>,
+    pub last_failed_job: Option<String>,
 }
 
 impl WorkloadRecord {
@@ -199,6 +204,9 @@ impl WorkloadRecord {
         let crashloop_since = time(CRASHLOOP_SINCE, &mut bad);
         let healthy_since = time(HEALTHY_SINCE, &mut bad);
         let reaped_at = time(REAPED_AT, &mut bad);
+        let failing_since = time(FAILING_SINCE, &mut bad);
+        let failed_runs =
+            get(FAILED_RUNS).and_then(|v| v.parse::<u32>().map_err(|_| bad(FAILED_RUNS, v)).ok());
         let original_replicas = get(ORIGINAL_REPLICAS)
             .and_then(|v| v.parse::<u32>().map_err(|_| bad(ORIGINAL_REPLICAS, v)).ok());
         let helm_release = get(HELMRELEASE)
@@ -214,8 +222,17 @@ impl WorkloadRecord {
             helm_release,
             reaped_at,
             restore: get(RESTORE).is_some_and(|v| !v.is_empty()),
+            failing_since,
+            failed_runs,
+            last_failed_job: get(LAST_FAILED_JOB).map(str::to_owned),
         };
         (record, errors)
+    }
+
+    /// When the crash loop or failing streak began.
+    #[must_use]
+    pub fn since(&self) -> Option<Timestamp> {
+        self.crashloop_since.or(self.failing_since)
     }
 
     /// The owned annotations (and state label) that represent this record.
@@ -247,6 +264,9 @@ impl WorkloadRecord {
         );
         put(REAPED_AT, self.reaped_at.map(|t| t.to_string()));
         put(RESTORE, self.restore.then(|| "true".to_owned()));
+        put(FAILING_SINCE, self.failing_since.map(|t| t.to_string()));
+        put(FAILED_RUNS, self.failed_runs.map(|n| n.to_string()));
+        put(LAST_FAILED_JOB, self.last_failed_job.clone());
         (a, self.state.map(|s| s.as_str().to_owned()))
     }
 }
@@ -403,6 +423,9 @@ mod tests {
             helm_release: Some(NsName::new("helm", "web")),
             reaped_at: Some(Timestamp::parse_rfc3339("2026-10-10T10:00:00Z").unwrap()),
             restore: true,
+            failing_since: Some(Timestamp::parse_rfc3339("2026-10-10T02:00:00Z").unwrap()),
+            failed_runs: Some(7),
+            last_failed_job: Some("ingest-29340000".into()),
         }
     }
 
@@ -420,6 +443,9 @@ mod tests {
             HELMRELEASE,
             REAPED_AT,
             RESTORE,
+            FAILING_SINCE,
+            FAILED_RUNS,
+            LAST_FAILED_JOB,
         ] {
             assert!(a.contains_key(key), "{key}");
         }

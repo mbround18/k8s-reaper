@@ -12,7 +12,9 @@ use std::fmt::Write as _;
 use crate::config::Mode;
 use crate::config_state::Counts;
 use crate::hold;
-use crate::model::{HelmReleaseView, NsName, ObjectRef, Snapshot, WorkloadRef, WorkloadView};
+use crate::model::{
+    HelmReleaseView, NsName, ObjectRef, Snapshot, WorkloadKind, WorkloadRef, WorkloadView,
+};
 use crate::notify::Notification;
 use crate::plan::{
     Action, CyclePlan, Decision, Evidence, Plan, RestoreKind, SkipReason, Transition,
@@ -304,10 +306,14 @@ impl<W: ClusterWriter, E: EventSink, T: Telemetry> Run<'_, W, E, T> {
         match result {
             Ok(()) => {
                 self.record(ActionKind::Reap, true);
-                let mut note = format!(
-                    "scaled {} → 0",
-                    original.map_or_else(|| "?".to_owned(), |n| n.to_string())
-                );
+                let mut note = if live.workload.kind == WorkloadKind::CronJob {
+                    "suspended".to_owned()
+                } else {
+                    format!(
+                        "scaled {} → 0",
+                        original.map_or_else(|| "?".to_owned(), |n| n.to_string())
+                    )
+                };
                 if let Some(reason) = live.annotations.get(REASON) {
                     let _ = write!(note, "; {reason}");
                 }
@@ -504,6 +510,9 @@ impl<W: ClusterWriter, E: EventSink, T: Telemetry> Run<'_, W, E, T> {
                 if let Some(n) = live.replicas {
                     let _ = write!(note, "; {n} replicas");
                 }
+                if actions.contains(&Action::ResumeCronJob) {
+                    note.push_str("; CronJob resumed");
+                }
                 if actions
                     .iter()
                     .any(|a| matches!(a, Action::ReleaseHelmRelease { .. }))
@@ -603,6 +612,22 @@ fn step_kind(action: &Action) -> Option<ActionKind> {
 /// The `reaper.boop.ninja/reason` text (contracts/annotations.md).
 fn reason(d: &Decision) -> String {
     let mut s = String::new();
+    if let Some(Evidence::JobFailures {
+        failed_runs,
+        last_failed_job,
+        last_failure_reason,
+    }) = &d.evidence
+    {
+        let _ = write!(s, "{failed_runs} failed runs");
+        if let Some(since) = d.since {
+            let _ = write!(s, " since {since}");
+        }
+        let _ = write!(s, ", last job \"{last_failed_job}\" failed");
+        if let Some(reason) = last_failure_reason {
+            let _ = write!(s, " ({reason})");
+        }
+        return s;
+    }
     if let Some(Evidence::Container {
         container,
         restarts,
@@ -633,13 +658,30 @@ fn reason(d: &Decision) -> String {
 /// The record a decision leaves on its workload before any step runs.
 fn desired_record(current: &WorkloadRecord, d: &Decision) -> WorkloadRecord {
     match &d.plan {
-        Plan::Observe | Plan::Reap { .. } | Plan::Skip { .. } => WorkloadRecord {
-            state: d.plan.resulting_state(current.state),
-            crashloop_since: d.since,
-            healthy_since: d.healthy_since,
-            plan: d.plan.published_json(),
-            ..current.clone()
-        },
+        Plan::Observe | Plan::Reap { .. } | Plan::Skip { .. } => {
+            let mut r = WorkloadRecord {
+                state: d.plan.resulting_state(current.state),
+                plan: d.plan.published_json(),
+                ..current.clone()
+            };
+            if d.workload.kind == WorkloadKind::CronJob {
+                r.failing_since = d.since;
+                // A reap under way carries no evidence; keep the count.
+                if let Some(Evidence::JobFailures {
+                    failed_runs,
+                    last_failed_job,
+                    ..
+                }) = &d.evidence
+                {
+                    r.failed_runs = Some(*failed_runs);
+                    r.last_failed_job = Some(last_failed_job.clone());
+                }
+            } else {
+                r.crashloop_since = d.since;
+                r.healthy_since = d.healthy_since;
+            }
+            r
+        }
         Plan::Recover | Plan::Forget => WorkloadRecord::default(),
         Plan::RestoreIgnored => WorkloadRecord {
             restore: false,
@@ -654,11 +696,13 @@ fn desired_record(current: &WorkloadRecord, d: &Decision) -> WorkloadRecord {
 /// The Event a decision is worth before any step runs, if it changes
 /// something (contracts/events.md). Step outcomes have their own Events.
 fn transition(current: &WorkloadRecord, d: &Decision, mode: Mode) -> Option<Transition> {
+    let cron = d.workload.kind == WorkloadKind::CronJob;
     match &d.plan {
-        Plan::Observe => current
-            .state
-            .is_none()
-            .then_some(Transition::CrashLoopObserved),
+        Plan::Observe => current.state.is_none().then_some(if cron {
+            Transition::JobFailuresObserved
+        } else {
+            Transition::CrashLoopObserved
+        }),
         Plan::Reap { .. } => {
             // In full mode the `Reaped` event replaces this; a reap already
             // under way is not planned again.
@@ -669,6 +713,7 @@ fn transition(current: &WorkloadRecord, d: &Decision, mode: Mode) -> Option<Tran
             let previous = current.plan.as_deref().and_then(published_skip);
             (previous != Some(*reason)).then_some(Transition::ReapSkipped(*reason))
         }
+        Plan::Recover if cron => Some(Transition::JobFailuresRecovered),
         Plan::Recover => Some(Transition::CrashLoopRecovered),
         Plan::RestoreIgnored => Some(Transition::RestoreIgnored),
         _ => None,
@@ -681,9 +726,23 @@ fn published_skip(json: &str) -> Option<SkipReason> {
     serde_json::from_value(value.get("skip")?.clone()).ok()
 }
 
-/// Plain English, naming the container, restarts and crash-loop start.
+/// Plain English, naming the container, restarts and crash-loop start (or
+/// the failed runs and the streak start).
 fn note(d: &Decision, now: Timestamp) -> String {
     let mut s = String::new();
+    let mut looping = "crash-looping";
+    if let Some(Evidence::JobFailures {
+        failed_runs,
+        last_failed_job,
+        last_failure_reason,
+    }) = &d.evidence
+    {
+        looping = "failing";
+        let _ = write!(s, "{failed_runs} failed runs, last job {last_failed_job}");
+        if let Some(reason) = last_failure_reason {
+            let _ = write!(s, " failed ({reason})");
+        }
+    }
     if let Some(Evidence::Container {
         pod,
         container,
@@ -704,7 +763,7 @@ fn note(d: &Decision, now: Timestamp) -> String {
             s.push_str("; ");
         }
         let minutes = now.seconds_since(since) / 60;
-        let _ = write!(s, "crash-looping since {since} ({minutes}m)");
+        let _ = write!(s, "{looping} since {since} ({minutes}m)");
     }
     let (prefix, actions) = match &d.plan {
         Plan::Reap { actions } => ("full mode would", actions.as_slice()),
@@ -774,7 +833,7 @@ fn rows(
             let state = written.get(&w.workload).copied().unwrap_or(record.state)?;
             let since = match decision {
                 Some(d) if written.contains_key(&w.workload) => d.since,
-                _ => record.crashloop_since,
+                _ => record.since(),
             };
             let skipped = match decision.map(|d| &d.plan) {
                 Some(Plan::Skip { reason, .. }) if written.contains_key(&w.workload) => {
@@ -797,14 +856,16 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::decide::decide;
-    use crate::model::WorkloadKind;
+
     use crate::ports::HelmReleasePatch;
     use crate::record::{
-        CRASHLOOP_SINCE, HEALTHY_SINCE, HELD_FOR, PLAN, RESTORE, SUSPENDED_BY_REAPER,
+        CRASHLOOP_SINCE, FAILED_RUNS, FAILING_SINCE, HEALTHY_SINCE, HELD_FOR, LAST_FAILED_JOB,
+        PLAN, RESTORE, SUSPENDED_BY_REAPER,
     };
     use crate::testing::{
         Call, FakeEvents, FakeTelemetry, FakeWriter, add_pod, block_on, crashlooping_container,
-        deployment, healthy_container, helm_release, mins_ago, snapshot,
+        cron_job, cron_mut, deployment, failed_job, healthy_container, helm_release, mins_ago,
+        snapshot, succeeded_job,
     };
 
     struct Run {
@@ -1312,5 +1373,140 @@ mod tests {
         let r = run(&looping(None, None, 30), Mode::Off);
         assert_eq!(r.writer.calls(), Vec::<Call>::new());
         assert_eq!(r.events.reasons(), Vec::<&str>::new());
+    }
+
+    // US5: CronJobs (T087)
+
+    /// A CronJob with three failed runs over `minutes`, in `state`.
+    fn failing_cron(state: Option<&str>, minutes: i64) -> Snapshot {
+        let mut snap = snapshot();
+        let mut c = cron_job("app", "ingest");
+        c.state_label = state.map(str::to_owned);
+        if state.is_some() {
+            c.reaper_annotations
+                .insert(FAILING_SINCE.into(), mins_ago(minutes).to_string());
+            c.reaper_annotations.insert(FAILED_RUNS.into(), "2".into());
+            c.reaper_annotations
+                .insert(LAST_FAILED_JOB.into(), "ingest-1".into());
+        }
+        cron_mut(&mut c).jobs = vec![
+            failed_job("ingest-0", minutes),
+            failed_job("ingest-1", minutes / 2),
+            failed_job("ingest-2", 1),
+        ];
+        snap.workloads.push(c);
+        snap
+    }
+
+    fn ingest() -> WorkloadRef {
+        WorkloadRef::new(WorkloadKind::CronJob, "app", "ingest")
+    }
+
+    #[test]
+    fn cron_first_sighting_records_the_streak_and_emits_job_failures_observed() {
+        let r = run(&failing_cron(None, 60), Mode::Report);
+        let calls = r.writer.calls();
+        assert_eq!(calls.len(), 1, "{calls:#?}");
+        let p = patch(&calls[0]);
+        assert_eq!(p.labels[STATE_LABEL].as_deref(), Some("observed"));
+        assert_eq!(
+            p.annotations[FAILING_SINCE].as_deref(),
+            Some(mins_ago(60).to_string().as_str())
+        );
+        assert_eq!(p.annotations[FAILED_RUNS].as_deref(), Some("3"));
+        assert_eq!(p.annotations[LAST_FAILED_JOB].as_deref(), Some("ingest-2"));
+        assert!(!p.annotations.contains_key(CRASHLOOP_SINCE));
+        assert_eq!(r.events.reasons(), ["JobFailuresObserved"]);
+        let note = r.events.events.lock().unwrap()[0].note.clone();
+        assert!(
+            note.starts_with(
+                "3 failed runs, last job ingest-2 failed (BackoffLimitExceeded); failing since "
+            ),
+            "{note}"
+        );
+        let rows = r.telemetry.rows.lock().unwrap();
+        assert_eq!(rows[0].crashloop_seconds, Some(3600));
+    }
+
+    #[test]
+    fn cron_full_mode_suspends_and_records_why() {
+        let r = run(&failing_cron(Some("observed"), 400), Mode::Full);
+        let calls = r.writer.calls();
+        assert_eq!(calls.len(), 4, "{calls:#?}");
+        let p = patch(&calls[1]);
+        assert_eq!(p.labels[STATE_LABEL].as_deref(), Some("reaping"));
+        assert!(!p.annotations.contains_key(ORIGINAL_REPLICAS));
+        assert_eq!(
+            p.annotations[REASON].as_deref(),
+            Some(
+                format!(
+                    "3 failed runs since {}, last job \"ingest-2\" failed (BackoffLimitExceeded)",
+                    mins_ago(400)
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            calls[2],
+            Call::SetCronJobSuspend {
+                workload: ingest(),
+                resource_version: "102".into(),
+                suspend: true,
+            }
+        );
+        assert_eq!(
+            patch(&calls[3]).labels[STATE_LABEL].as_deref(),
+            Some("reaped")
+        );
+        assert_eq!(r.events.reasons(), ["Reaped"]);
+        let note = r.events.events.lock().unwrap()[0].note.clone();
+        assert!(note.starts_with("suspended; 3 failed runs"), "{note}");
+        assert!(r.telemetry.actions.lock().unwrap().contains(&(
+            ActionKind::CronJobSuspend,
+            ActionResult::Success,
+            Mode::Full
+        )));
+    }
+
+    #[test]
+    fn cron_success_emits_job_failures_recovered_and_clears() {
+        let mut snap = failing_cron(Some("observed"), 60);
+        cron_mut(&mut snap.workloads[0])
+            .jobs
+            .push(succeeded_job("ingest-3", 0));
+        let r = run(&snap, Mode::Report);
+        let p = patch(&r.writer.calls()[0]).clone();
+        assert_eq!(p.labels[STATE_LABEL], None);
+        for key in [FAILING_SINCE, FAILED_RUNS, LAST_FAILED_JOB] {
+            assert_eq!(p.annotations[key], None, "{key}");
+        }
+        assert_eq!(r.events.reasons(), ["JobFailuresRecovered"]);
+    }
+
+    #[test]
+    fn cron_restore_resumes_it() {
+        let mut snap = failing_cron(Some("reaped"), 400);
+        let c = &mut snap.workloads[0];
+        c.reaper_annotations.insert(RESTORE.into(), "true".into());
+        cron_mut(c).suspended = true;
+        let r = run(&snap, Mode::Report);
+        let calls = r.writer.calls();
+        assert_eq!(
+            calls[0],
+            Call::SetCronJobSuspend {
+                workload: ingest(),
+                resource_version: "1".into(),
+                suspend: false,
+            }
+        );
+        assert_eq!(patch(&calls[1]).labels[STATE_LABEL], None);
+        assert_eq!(r.events.reasons(), ["Restored"]);
+        let note = r.events.events.lock().unwrap()[0].note.clone();
+        assert_eq!(note, "requested; CronJob resumed");
+        assert!(r.telemetry.actions.lock().unwrap().contains(&(
+            ActionKind::CronJobResume,
+            ActionResult::Success,
+            Mode::Report
+        )));
     }
 }

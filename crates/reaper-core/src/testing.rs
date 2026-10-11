@@ -9,8 +9,9 @@ use std::task::{Context, Poll, Waker};
 
 use crate::config::Mode;
 use crate::model::{
-    ContainerView, FluxRefs, HelmReleaseView, NamespaceView, NsName, ObjectRef, OwnerRef, PodView,
-    Snapshot, Termination, WorkloadKind, WorkloadRef, WorkloadView,
+    ContainerView, CronJobView, FluxRefs, HelmReleaseView, JobOutcome, JobView, NamespaceView,
+    NsName, ObjectRef, OwnerRef, PodView, Snapshot, Termination, WorkloadKind, WorkloadRef,
+    WorkloadView,
 };
 use crate::ports::{
     ActionKind, ActionResult, ClusterWriter, EventRecord, EventSink, HelmReleasePatch, Telemetry,
@@ -83,12 +84,58 @@ pub fn workload(kind: WorkloadKind, namespace: &str, name: &str) -> WorkloadView
         mode_annotation: None,
         reaper_annotations: BTreeMap::new(),
         state_label: None,
+        cron_job: (kind == WorkloadKind::CronJob).then(CronJobView::default),
     }
 }
 
 #[must_use]
 pub fn deployment(namespace: &str, name: &str) -> WorkloadView {
     workload(WorkloadKind::Deployment, namespace, name)
+}
+
+/// A CronJob, not suspended, with no Jobs yet.
+#[must_use]
+pub fn cron_job(namespace: &str, name: &str) -> WorkloadView {
+    workload(WorkloadKind::CronJob, namespace, name)
+}
+
+/// A Job that failed `minutes` ago with `BackoffLimitExceeded`.
+#[must_use]
+pub fn failed_job(name: &str, minutes: i64) -> JobView {
+    JobView {
+        name: name.into(),
+        outcome: JobOutcome::Failed {
+            at: mins_ago(minutes),
+            reason: Some("BackoffLimitExceeded".into()),
+        },
+    }
+}
+
+/// A Job that completed `minutes` ago.
+#[must_use]
+pub fn succeeded_job(name: &str, minutes: i64) -> JobView {
+    JobView {
+        name: name.into(),
+        outcome: JobOutcome::Succeeded {
+            at: mins_ago(minutes),
+        },
+    }
+}
+
+#[must_use]
+pub fn running_job(name: &str) -> JobView {
+    JobView {
+        name: name.into(),
+        outcome: JobOutcome::Running,
+    }
+}
+
+/// The CronJob part of a fixture workload.
+///
+/// # Panics
+/// If `w` is not a CronJob.
+pub fn cron_mut(w: &mut WorkloadView) -> &mut CronJobView {
+    w.cron_job.as_mut().expect("a CronJob fixture")
 }
 
 /// A container in `CrashLoopBackOff` after exiting 1.
