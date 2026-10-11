@@ -272,6 +272,28 @@ with the owner's agreement and saying so in the commit.
 - [X] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
 - [X] G18 kube's event `Recorder` folds a repeat of the same object, reason, action and type into the first Event's series and keeps its note, so a second `ConfigApplied` still reads "generation 6 is active" and a later `ConfigInvalid` keeps the first error. The `Valid` condition and `activeGeneration` are correct; fixed: `KubeEventSink` keys the series on the note too, as client-go does
 
+### Found while documenting (2026-10-11)
+
+Each was found by writing the guides against the code; the guides describe
+today's behaviour and need updating when one closes.
+
+- [ ] G19 `/healthz` never fails: `Health::set_alive` is never called, so the liveness probe cannot restart a reaper whose cycle loop has panicked or hung (contracts/config.md HTTP). Set it false when the cycle task ends or panics, and when no cycle has started for a long time (well beyond the 3× readiness window); unit test in `reaper-observability/src/http.rs`, and a test in `run.rs` that a panicking cycle turns `/healthz` 503
+- [ ] G20 `/readyz` ignores the config: contracts/config.md says it needs a valid config to be active, but `run.rs` only calls `set_ready(true)`. Decide with the owner: (a) not ready while no valid config has ever been applied (a later invalid one keeps the last good one, so stays ready), or (b) drop the clause from the contract. Recommendation (a)
+- [ ] G21 The ReaperConfig `Ready` condition is always written `True` (`config_watch.rs` `READY`) and never `False`, so it goes stale rather than wrong-way. Write `False` with a reason (`Stalled`, `CachesNotSynced`) when the last cycle is older than 3× the interval, matching `/readyz`; update getting-started §4.4 and monitoring.md
+- [ ] G22 A failed write of the reaper's own label or annotations (record, plan, state) emits no `ReapFailed` Event and no `reaper_actions_total{result="error"}`; only `reaper_cycles_total{result="error"}` and logs show it, and no alert fires. Count it under an action (`record`) with `result="error"` and emit a Warning Event, so `ReaperActionFailed` covers it (contracts/metrics.md, contracts/events.md)
+- [ ] G23 `ReaperDown` uses `up{job="k8s-reaper"}` in the contract but `up{job="<release fullname>"}` in the chart, which only agree when the release name contains `k8s-reaper`; with the ServiceMonitor off the alert fires forever. Chart: render the job from the Service name and only install `ReaperDown` when the ServiceMonitor is enabled; contract: say the job is the Service name
+- [ ] G24 False `ReaperStalled`/`ReaperConfigInvalid` at start-up: `reaper_last_cycle_timestamp_seconds` and `reaper_config_valid` read 0 until the first cycle. Leave them unset until the first cycle (or set `reaper_config_valid` only once a config is read), and make the alert expressions ignore absent series; check against a slow cache sync on kind
+- [ ] G25 `SkipReason::OptedOut` and `SkipReason::UnsupportedOwner` are defined but never produced: `mode=off` workloads are dropped before planning and unowned pods are never tracked (G09). Remove both from `plan.rs`, data-model.md and contracts/annotations.md, or produce them; recommendation: remove
+- [ ] G26 A manual `flux resume` of a HelmRelease the reaper suspended is not detected as a restore; the Deployment stays reaped and the HelmRelease's next reconcile fights the scale-to-zero. data-model.md covers the CronJob case (`spec.suspend: false` = manual resume) but not the HelmRelease. Treat `spec.suspend: false` on a held HelmRelease as `manual-resume` for every workload it holds; unit test in `decide.rs`, scenario in us3
+- [ ] G27 Excluding a namespace (or adding `mode=off` to a namespace) leaves workloads already reaped there at 0 with their Flux holds in place; only a per-workload `mode=off` restores (`opted-out`). Decide with the owner whether scope changes restore (as `opted-out`) or stay documented (configuration.md, how-it-works.md). Recommendation: restore, since the reaper otherwise holds objects it no longer looks at
+- [ ] G28 Contract drift: contracts/events.md lists `requested`, `manual-scale-up` and `manual-resume` for `Restored` but the code also writes `opted-out`; contracts/metrics.md says alerts carry namespace/kind/name, but `ReaperActionFailed` carries action/result/mode and the cycle/config/down alerts carry none; contracts/config.md mentions only `OTEL_EXPORTER_OTLP_ENDPOINT` though the per-signal variables work too, and the reaper creates no spans of its own. Bring the contracts in line with the code (or the code with them, for spans)
+
+### Chart repo (mbround18/helm-charts, outside this repo)
+
+- [ ] G29 `charts/k8s-reaper/README.md` uses a `helm repo add` URL that does not exist; point it at the GitRepository/clone install the guides use (docs/guides/helm-chart.md)
+- [ ] G30 The memory request is 32Mi, but the reaper used about 58Mi on roanoke watching a whole cluster; raise the request to 64Mi and check the limit leaves headroom
+- [ ] G31 The chart's sync-wave annotations are Argo CD only and do nothing under Flux; drop them or document that CRD ordering under Flux comes from `crds: CreateReplace`. The CRD header comment is lost when the CRD is regenerated from `k8s-reaper crd`; add it in the generator or the regeneration script
+
 ## Dependencies
 
 - Phase 1 → Phase 2 → US1.
