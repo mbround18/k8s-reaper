@@ -15,7 +15,7 @@ REGISTRY_IMAGE ?= registry:2.8.3
 KUBECTL         = kubectl --context $(KUBE_CONTEXT)
 FLUX            = flux --context $(KUBE_CONTEXT)
 
-.PHONY: help build test test-integration lint image gc dev-guard dev-cluster dev-kind dev-registry dev-fixtures dev-push dev-down dev-clean dev-load dev-run dev-notify
+.PHONY: help build test test-integration lint image image-debug gc dev-guard dev-cluster dev-kind dev-registry dev-fixtures dev-push dev-down dev-clean dev-load dev-run dev-notify
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -35,6 +35,9 @@ test-integration: dev-guard ## Dev-cluster integration suite; STORY=us1_report r
 
 image: ## Build the container image
 	docker build -t $(IMAGE) .
+
+image-debug: ## Debug-build image with test-only hooks (us7_health step 3); never ship it
+	docker build --build-arg PROFILE=dev -t $(IMAGE) .
 
 # Build hygiene. Never fails the build.
 gc: ## Sweep stale target/ output and cap the BuildKit cache
