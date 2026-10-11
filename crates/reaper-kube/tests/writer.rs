@@ -222,17 +222,31 @@ async fn scale_patches_the_scale_subresource() {
     });
     let (w, server) = writer(200, reply);
     let sts = WorkloadRef::new(WorkloadKind::StatefulSet, "shop", "db");
-    assert_eq!(w.scale(&sts, 0).await, Ok("11".to_owned()));
+    assert_eq!(w.scale(&sts, "10", 0).await, Ok("11".to_owned()));
     let seen = server.await.unwrap();
     assert_merge_patch(&seen, "/apis/apps/v1/namespaces/shop/statefulsets/db/scale");
-    assert_eq!(seen.body, json!({"spec": {"replicas": 0}}));
+    assert_eq!(
+        seen.body,
+        json!({"metadata": {"resourceVersion": "10"}, "spec": {"replicas": 0}})
+    );
+}
+
+#[tokio::test]
+async fn scale_conflict_is_mapped() {
+    let (w, server) = writer(409, status(409, "Conflict"));
+    let web = WorkloadRef::new(WorkloadKind::Deployment, "shop", "web");
+    assert_eq!(w.scale(&web, "10", 0).await, Err(WriteError::Conflict));
+    server.await.unwrap();
 }
 
 #[tokio::test]
 async fn scale_refuses_kinds_without_a_scale_subresource() {
     let (w, server) = writer(200, json!({}));
     let ds = WorkloadRef::new(WorkloadKind::DaemonSet, "shop", "agent");
-    assert!(matches!(w.scale(&ds, 0).await, Err(WriteError::Other(_))));
+    assert!(matches!(
+        w.scale(&ds, "1", 0).await,
+        Err(WriteError::Other(_))
+    ));
     server.abort();
 }
 

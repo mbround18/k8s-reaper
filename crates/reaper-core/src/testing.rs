@@ -194,6 +194,7 @@ pub enum Call {
     },
     Scale {
         workload: WorkloadRef,
+        resource_version: String,
         replicas: u32,
     },
     SetCronJobSuspend {
@@ -289,10 +290,12 @@ impl ClusterWriter for FakeWriter {
     fn scale(
         &self,
         workload: &WorkloadRef,
+        resource_version: &str,
         replicas: u32,
     ) -> impl Future<Output = Result<String, WriteError>> + Send {
         self.record(Call::Scale {
             workload: workload.clone(),
+            resource_version: resource_version.into(),
             replicas,
         })
     }
@@ -396,10 +399,10 @@ mod tests {
     fn fake_writer_threads_resource_versions_and_failures() {
         let w = FakeWriter::new();
         let d = WorkloadRef::new(WorkloadKind::Deployment, "app", "web");
-        let rv = block_on(w.scale(&d, 0)).unwrap();
+        let rv = block_on(w.scale(&d, "1", 0)).unwrap();
         assert_eq!(rv, "101");
         w.fail_when(|c| matches!(c, Call::Scale { .. }).then_some(WriteError::Conflict));
-        assert_eq!(block_on(w.scale(&d, 0)), Err(WriteError::Conflict));
+        assert_eq!(block_on(w.scale(&d, "1", 0)), Err(WriteError::Conflict));
         assert_eq!(w.calls().len(), 2);
         assert!(!w.calls()[0].only_reaper_metadata());
     }

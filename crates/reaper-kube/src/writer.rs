@@ -1,5 +1,5 @@
-//! `ClusterWriter` over the Kubernetes API: merge patches with a
-//! `resourceVersion` precondition, and the `scale` subresource.
+//! `ClusterWriter` over the Kubernetes API: merge patches, including on the
+//! `scale` subresource, each with a `resourceVersion` precondition.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -138,6 +138,7 @@ impl ClusterWriter for KubeWriter {
     fn scale(
         &self,
         workload: &WorkloadRef,
+        resource_version: &str,
         replicas: u32,
     ) -> impl Future<Output = Result<String, WriteError>> + Send {
         let target = workload.object_ref();
@@ -158,7 +159,10 @@ impl ClusterWriter for KubeWriter {
                 .patch_scale(
                     &workload.name,
                     &params(),
-                    &Patch::Merge(json!({"spec": {"replicas": replicas}})),
+                    &Patch::Merge(json!({
+                        "metadata": {"resourceVersion": resource_version},
+                        "spec": {"replicas": replicas},
+                    })),
                 )
                 .await
                 .map_err(write_error)?;

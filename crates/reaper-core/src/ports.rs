@@ -41,10 +41,12 @@ pub trait ClusterWriter {
         patch: &MetadataPatch,
     ) -> impl Future<Output = Result<String, WriteError>> + Send;
 
-    /// Set replicas through the `scale` subresource.
+    /// Set replicas through the `scale` subresource, with a `resourceVersion`
+    /// precondition (the Scale shares its workload's `resourceVersion`).
     fn scale(
         &self,
         workload: &WorkloadRef,
+        resource_version: &str,
         replicas: u32,
     ) -> impl Future<Output = Result<String, WriteError>> + Send;
 
