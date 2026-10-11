@@ -91,14 +91,14 @@ alerts at start-up; and (chart, US5 PR) `ReaperDown` only exists with the Servic
 
 ### Tests first
 
-- [ ] T130 [P] [US2] Executor tests in `crates/reaper-core/src/executor.rs`. With the fake writer failing the metadata patch:
+- [X] T130 [P] [US2] Executor tests in `crates/reaper-core/src/executor.rs`. With the fake writer failing the metadata patch:
   - with `WriteError::Other("forbidden")`, the telemetry fake records `(Record, error)`, one `RecordFailed` Warning Event is emitted on the workload, and the state does not advance;
   - with `Conflict` or `NotFound`, nothing is recorded and no Event is emitted;
   - a successful metadata patch records nothing for `Record`;
   - this holds in `Report` and `Full`.
 
   Extend the existing `failed_write_skips_the_event_and_reports_the_failure` test rather than duplicating it.
-- [ ] T131 [P] [US2] Telemetry tests in `crates/reaper-observability/src/telemetry.rs`:
+- [X] T131 [P] [US2] Telemetry tests in `crates/reaper-observability/src/telemetry.rs`:
   - right after `Metrics::new(start)`, the Prometheus text has `reaper_last_cycle_timestamp_seconds <start>` (not 0) and no `reaper_config_valid` line;
   - after `config_valid(true)` it shows `1`;
   - test `startup_series_do_not_alert`: given the start-up text, the two alert conditions (`time() - ts > 600` at `start + 5m`; `config_valid == 0`) are false.
@@ -106,18 +106,20 @@ alerts at start-up; and (chart, US5 PR) `ReaperDown` only exists with the Servic
 
 ### Implementation
 
-- [ ] T132 [US2] In `crates/reaper-core/src/executor.rs`, at the metadata patch (`if let Err(error) = live.patch(writer, &patch).await`), match the error:
+- [X] T132 [US2] In `crates/reaper-core/src/executor.rs`, at the metadata patch (`if let Err(error) = live.patch(writer, &patch).await`), match the error:
   - `WriteError::Other` → `run.record(ActionKind::Record, false)` and `run.emit(workload, &Transition::RecordFailed, <error text ≤ 1 KB>, live.state())`, then `run.fail(...)` as today;
   - other errors keep today's path.
 
   A repeat failure on the next cycle must continue the same Event series, which needs the same note, so the note is the error text only and has no timestamp.
-- [ ] T133 [US2] In `crates/reaper-observability/src/telemetry.rs`:
+- [X] T133 [US2] In `crates/reaper-observability/src/telemetry.rs`:
   - `Metrics::new` takes the process start as a Unix time and initialises `last_cycle` to it;
   - turn `config_valid` into a label-less `Family<Vec<(String, String)>, Gauge>`, so it is absent until first set;
   - the OTel mirrors are unchanged;
   - pass the start time from `apps/k8s-reaper/src/run.rs`.
-- [ ] T134 [US2] Add the dev-only RBAC `deploy/dev/rbac-deny-patch.yaml`: a ClusterRole identical to the dev one minus `patch` on `deployments`, with a comment on how to apply and revert it. Add a section to `deploy/dev/README.md`.
-- [ ] T135 [US2] Docs:
+
+  Done as `Metrics::register(.., started: SystemTime)` (there is no `Metrics::new`). `config_valid` is a small `UnsetGauge` that reports itself empty until set, not a `Family` with an empty label set: the `Family` renders `reaper_config_valid{} 1`, which the quickstart §2 grep misses.
+- [X] T134 [US2] Add the dev-only RBAC `deploy/dev/rbac-deny-patch.yaml`: a ClusterRole identical to the dev one minus `patch` on `deployments`, with a comment on how to apply and revert it. Add a section to `deploy/dev/README.md`.
+- [X] T135 [US2] Docs:
   - in `docs/guides/monitoring.md`: the `record` action, the `RecordFailed` runbook, and the start-up behaviour of both series;
   - in `docs/guides/troubleshooting.md`: "label writes are failing";
   - ~~apply contracts/metrics.md (the Metrics table, and the Alert rules with the labels column) to `specs/001-crashloop-reaper/contracts/metrics.md`;~~ done under T143;
