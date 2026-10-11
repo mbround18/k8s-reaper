@@ -679,13 +679,13 @@ About the image:
 
 ### Image (manual fallback)
 
-When CI cannot publish (0.1.0 was released this way), build and push from a
+When CI cannot publish (0.1.0 and 0.1.1 were released this way), build and push from a
 clean checkout of the tag:
 
 ```sh
-git checkout v0.1.0
-docker build -t mbround18/k8s-reaper:0.1.0 .
-docker push mbround18/k8s-reaper:0.1.0
+git checkout v0.1.1
+docker build -t mbround18/k8s-reaper:0.1.1 .
+docker push mbround18/k8s-reaper:0.1.1
 ```
 
 A later CI run for the same tag pushes the same version again and overwrites
@@ -697,8 +697,9 @@ The Helm chart is not in this repository. It lives in
 [`mbround18/helm-charts`](https://github.com/mbround18/helm-charts) as
 `charts/k8s-reaper`. After an image release:
 
-1. Bump `version` and `appVersion` in `charts/k8s-reaper/Chart.yaml`
-   (`appVersion` is the image tag).
+1. Bump `appVersion` in `charts/k8s-reaper/Chart.yaml` (it is the image
+   tag). Leave `version` alone: the chart repository's robot bumps it when
+   the PR merges.
 2. If the CRD changed (the golden file here changed since the last release),
    regenerate the chart's copy from the tagged code:
 

@@ -2,7 +2,7 @@
 
 The k8s-reaper Helm chart lives in
 [mbround18/helm-charts](https://github.com/mbround18/helm-charts) under
-`charts/k8s-reaper` (chart `0.1.0`, app `0.1.0`). It installs the
+`charts/k8s-reaper` (app `0.1.1`). It installs the
 `ReaperConfig` CRD, a single reaper pod with least-privilege RBAC, a metrics
 Service, and `ReaperConfig/default` in report mode. A ServiceMonitor and a
 PrometheusRule are available but off by default. This guide covers installing
@@ -178,7 +178,7 @@ Every key in `values.yaml`:
 | Key                          | Default                          | Description |
 | ---------------------------- | -------------------------------- | ----------- |
 | `image.repository`           | `mbround18/k8s-reaper`           | Image repository. The same image is published to `ghcr.io/mbround18/k8s-reaper`. |
-| `image.tag`                  | `""`                             | Image tag. Empty uses the chart's `appVersion` (`0.1.0`). |
+| `image.tag`                  | `""`                             | Image tag. Empty uses the chart's `appVersion` (`0.1.1`). |
 | `image.pullPolicy`           | `IfNotPresent`                   | Container `imagePullPolicy`. |
 | `imagePullSecrets`           | `[]`                             | Pod `imagePullSecrets`, for a private mirror. |
 | `nameOverride`               | `""`                             | Replaces the chart name in resource names and the `app.kubernetes.io/name` label. |
@@ -428,7 +428,7 @@ them on `helm upgrade` and never deletes them on `helm uninstall`.
   Or print it from the image you are about to run:
 
   ```sh
-  docker run --rm mbround18/k8s-reaper:0.1.0 crd | kubectl apply -f -
+  docker run --rm mbround18/k8s-reaper:0.1.1 crd | kubectl apply -f -
   ```
 
 ## 8. Upgrade
