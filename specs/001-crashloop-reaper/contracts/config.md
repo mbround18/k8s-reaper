@@ -34,7 +34,7 @@ spec:
     minFailedRuns: 3           # and at least this many failed runs (1–1000)
   notifications:               # US6; channel URLs come from a mounted Secret, never from here
     enabled: true
-    reasons: [ReapPlanned, Reaped, ReapFailed, Restored, RestoreFailed, HelmReleaseHeld, ConfigInvalid]
+    reasons: [Reaped, ReapFailed, Restored, RestoreFailed, HelmReleaseHeld, ConfigInvalid]
     minInterval: 1h
 status:
   observedGeneration: 3

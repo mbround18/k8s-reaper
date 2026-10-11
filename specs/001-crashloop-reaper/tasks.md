@@ -211,8 +211,8 @@ thresholds; SC-008.
 **Goal**: optional chat/mail messages on transitions, from channel URLs in a
 mounted Secret. Off, with no outbound connection, when nothing is mounted.
 
-**Blocked on**: spec.md Question 6 (new dependencies `reqwest`/`lettre`, Secret
-mount vs RBAC, default reasons). Do not start T093+ until it is answered.
+**Decided**: spec.md Question 6, answered 2026-10-10 (`reqwest` + `lettre`,
+mounted Secret, `ReapPlanned` opt-in).
 
 **Independent test**: spec.md US6. Integration `apps/k8s-reaper/tests/us6_notify.rs`.
 
@@ -278,8 +278,8 @@ with the owner's agreement and saying so in the commit.
 - US5 needs US2 and US3 (record, holds, restore) and the US4 config plumbing
   for `cronJobs.*`.
 - Full mode must not be enabled anywhere but dev until US3 is done.
-- US6 needs US1 (transitions and Events) and the US4 config plumbing; it is
-  blocked on spec.md Question 6. It can run in parallel with US2–US5.
+- US6 needs US1 (transitions and Events) and the US4 config plumbing; Question 6
+  is answered. It can run in parallel with US2–US5.
 - Gaps G01–G05 come before T075; G07 before T044; G06 and G10–G12 before T076.
 - T076 → T077. Both come after US3, so the deployed build can be switched to
   full mode safely later.

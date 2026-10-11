@@ -1,10 +1,12 @@
 //! Runtime configuration: defaults, parsing and validation (data-model.md).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::notify::{DEFAULT_REASONS, EVENT_REASONS};
 use crate::time::{format_duration, parse_duration};
 
 /// Effective operating mode. Ordered so the most restrictive is the smallest:
@@ -44,6 +46,7 @@ pub struct Config {
     pub limits: Limits,
     pub flux: FluxToggles,
     pub cron_jobs: CronJobs,
+    pub notifications: Notifications,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +79,33 @@ pub struct CronJobs {
     pub enabled: bool,
     pub failing_duration: Duration,
     pub min_failed_runs: u32,
+}
+
+/// Which transitions are sent to notification channels (US6). Channel URLs
+/// are never part of the config; they come from a mounted Secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notifications {
+    pub enabled: bool,
+    pub cluster_name: String,
+    /// Event reasons that are sent at all.
+    pub reasons: BTreeSet<String>,
+    /// A repeat for the same object and reason inside this window is dropped.
+    pub min_interval: Duration,
+    /// Per-channel reason filters, by channel name. A channel not listed gets
+    /// every reason in `reasons`.
+    pub channels: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Notifications {
+            enabled: true,
+            cluster_name: String::new(),
+            reasons: DEFAULT_REASONS.iter().map(|r| (*r).to_owned()).collect(),
+            min_interval: Duration::from_hours(1),
+            channels: BTreeMap::new(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -112,6 +142,7 @@ impl Default for Config {
                 failing_duration: Duration::from_hours(6),
                 min_failed_runs: 3,
             },
+            notifications: Notifications::default(),
         }
     }
 }
@@ -145,6 +176,11 @@ pub struct RawConfig {
     pub cron_jobs_enabled: Option<bool>,
     pub cron_jobs_failing_duration: Option<String>,
     pub cron_jobs_min_failed_runs: Option<i64>,
+    pub notifications_enabled: Option<bool>,
+    pub notifications_cluster_name: Option<String>,
+    pub notifications_reasons: Option<Vec<String>>,
+    pub notifications_min_interval: Option<String>,
+    pub notifications_channels: Option<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +287,7 @@ impl Config {
             &mut c.cron_jobs.min_failed_runs,
         );
 
+        notifications_fields(&mut errors, raw, &mut c.notifications);
         if errors.is_empty() {
             Ok(c)
         } else {
@@ -276,6 +313,17 @@ impl Config {
             cron_jobs_enabled: Some(self.cron_jobs.enabled),
             cron_jobs_failing_duration: Some(format_duration(self.cron_jobs.failing_duration)),
             cron_jobs_min_failed_runs: Some(self.cron_jobs.min_failed_runs.into()),
+            notifications_enabled: Some(self.notifications.enabled),
+            notifications_cluster_name: Some(self.notifications.cluster_name.clone()),
+            notifications_reasons: Some(self.notifications.reasons.iter().cloned().collect()),
+            notifications_min_interval: Some(format_duration(self.notifications.min_interval)),
+            notifications_channels: Some(
+                self.notifications
+                    .channels
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+                    .collect(),
+            ),
         }
     }
 }
@@ -305,6 +353,68 @@ fn list_field(
         });
     } else {
         target.clone_from(list);
+    }
+}
+
+/// Longest `notifications.clusterName`; it is only a label in messages.
+const CLUSTER_NAME_MAX: usize = 63;
+
+fn notifications_fields(errors: &mut Vec<FieldError>, raw: &RawConfig, n: &mut Notifications) {
+    if let Some(v) = raw.notifications_enabled {
+        n.enabled = v;
+    }
+    if let Some(name) = &raw.notifications_cluster_name {
+        if name.len() > CLUSTER_NAME_MAX {
+            errors.push(FieldError {
+                field: "spec.notifications.clusterName",
+                message: format!("longer than {CLUSTER_NAME_MAX} characters"),
+            });
+        } else {
+            n.cluster_name.clone_from(name);
+        }
+    }
+    if let Some(reasons) = &raw.notifications_reasons
+        && let Some(set) = reason_set(errors, "spec.notifications.reasons", reasons)
+    {
+        n.reasons = set;
+    }
+    duration_field(
+        errors,
+        "spec.notifications.minInterval",
+        raw.notifications_min_interval.as_deref(),
+        (0, DAY),
+        &mut n.min_interval,
+    );
+    if let Some(channels) = &raw.notifications_channels {
+        n.channels = channels
+            .iter()
+            .filter_map(|(name, reasons)| {
+                reason_set(errors, "spec.notifications.channels", reasons)
+                    .map(|set| (name.clone(), set))
+            })
+            .collect();
+    }
+}
+
+/// The reasons as a set, or `None` (with an error) if any is not an Event reason.
+fn reason_set(
+    errors: &mut Vec<FieldError>,
+    field: &'static str,
+    reasons: &[String],
+) -> Option<BTreeSet<String>> {
+    let unknown: Vec<&str> = reasons
+        .iter()
+        .map(String::as_str)
+        .filter(|r| !EVENT_REASONS.contains(r))
+        .collect();
+    if unknown.is_empty() {
+        Some(reasons.iter().cloned().collect())
+    } else {
+        errors.push(FieldError {
+            field,
+            message: format!("unknown Event reasons {unknown:?}"),
+        });
+        None
     }
 }
 
@@ -356,6 +466,77 @@ mod tests {
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)
+    }
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn notifications_default_to_actionable_reasons_only() {
+        let n = Config::default().notifications;
+        assert!(n.enabled);
+        assert_eq!(n.min_interval, Duration::from_hours(1));
+        assert!(n.reasons.contains("Reaped"));
+        assert!(
+            !n.reasons.contains("ReapPlanned"),
+            "ReapPlanned is opt-in (Question 6)"
+        );
+        assert_eq!(n.channels, BTreeMap::new());
+    }
+
+    #[test]
+    fn notifications_fields_parse() {
+        let raw = RawConfig {
+            notifications_enabled: Some(false),
+            notifications_cluster_name: Some("roanoke".into()),
+            notifications_reasons: Some(strings(&["ReapPlanned", "Reaped"])),
+            notifications_min_interval: Some("0s".into()),
+            notifications_channels: Some(BTreeMap::from([(
+                "ops-discord".to_owned(),
+                strings(&["Reaped"]),
+            )])),
+            ..RawConfig::default()
+        };
+        let n = Config::from_raw(&raw).unwrap().notifications;
+        assert!(!n.enabled);
+        assert_eq!(n.cluster_name, "roanoke");
+        assert_eq!(
+            n.reasons,
+            BTreeSet::from(["ReapPlanned".into(), "Reaped".into()])
+        );
+        assert_eq!(n.min_interval, Duration::ZERO);
+        assert_eq!(n.channels["ops-discord"], BTreeSet::from(["Reaped".into()]));
+        assert_eq!(
+            Config::from_raw(&Config::from_raw(&raw).unwrap().to_raw()),
+            Config::from_raw(&raw)
+        );
+    }
+
+    #[test]
+    fn notifications_reject_unknown_reasons_and_long_intervals() {
+        let raw = RawConfig {
+            notifications_reasons: Some(strings(&["Reaped", "Exploded"])),
+            notifications_min_interval: Some("25h".into()),
+            notifications_channels: Some(BTreeMap::from([("x".to_owned(), strings(&["Nope"]))])),
+            notifications_cluster_name: Some("c".repeat(64)),
+            ..RawConfig::default()
+        };
+        let fields: Vec<&str> = Config::from_raw(&raw)
+            .unwrap_err()
+            .errors
+            .iter()
+            .map(|e| e.field)
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "spec.notifications.clusterName",
+                "spec.notifications.reasons",
+                "spec.notifications.minInterval",
+                "spec.notifications.channels",
+            ]
+        );
     }
 
     #[test]

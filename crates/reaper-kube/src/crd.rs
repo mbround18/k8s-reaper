@@ -4,6 +4,8 @@
 //! (`reaper_core::config::Config::from_raw`). The schema here repeats the
 //! enum, range and pattern rules so the API server rejects bad values first.
 
+use std::collections::BTreeMap;
+
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 use kube::{CustomResource, CustomResourceExt};
 use reaper_core::config::{Config, ConfigError, RawConfig};
@@ -45,6 +47,8 @@ pub struct ReaperConfigSpec {
     pub flux: Option<FluxSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron_jobs: Option<CronJobsSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<NotificationsSpec>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -123,6 +127,38 @@ pub struct CronJobsSpec {
     pub min_failed_runs: Option<i64>,
 }
 
+/// Which transitions reach notification channels (US6). Channel URLs come
+/// from a mounted Secret, never from here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationsSpec {
+    /// Master switch (default true); with no channels mounted nothing is sent anyway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Cluster name shown in messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 63))]
+    pub cluster_name: Option<String>,
+    /// Event reasons to send (default: `Reaped`, `ReapFailed`, `Restored`, `RestoreFailed`, `HelmReleaseHeld`, `ConfigInvalid`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasons: Option<Vec<String>>,
+    /// Drop repeats for the same object and reason inside this window (0s–24h, default 1h).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = DURATION_PATTERN))]
+    pub min_interval: Option<String>,
+    /// Per-channel reason filters, keyed by the channel's Secret key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<BTreeMap<String, ChannelSpec>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelSpec {
+    /// Reasons this channel receives, out of `notifications.reasons`.
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ReaperConfigStatus {
@@ -156,6 +192,7 @@ impl ReaperConfigSpec {
         let limits = self.limits.clone().unwrap_or_default();
         let flux = self.flux.clone().unwrap_or_default();
         let cron_jobs = self.cron_jobs.clone().unwrap_or_default();
+        let notifications = self.notifications.clone().unwrap_or_default();
         RawConfig {
             mode: Some(
                 match self.mode {
@@ -177,6 +214,13 @@ impl ReaperConfigSpec {
             cron_jobs_enabled: cron_jobs.enabled,
             cron_jobs_failing_duration: cron_jobs.failing_duration,
             cron_jobs_min_failed_runs: cron_jobs.min_failed_runs,
+            notifications_enabled: notifications.enabled,
+            notifications_cluster_name: notifications.cluster_name,
+            notifications_reasons: notifications.reasons,
+            notifications_min_interval: notifications.min_interval,
+            notifications_channels: notifications
+                .channels
+                .map(|c| c.into_iter().map(|(k, v)| (k, v.reasons)).collect()),
         }
     }
 
@@ -213,7 +257,13 @@ mod tests {
             "scope": { "includeNamespaces": ["slam-*"] },
             "limits": { "maxReaped": 2 },
             "flux": { "helmRelease": false },
-            "cronJobs": { "enabled": false, "failingDuration": "2h", "minFailedRuns": 5 }
+            "cronJobs": { "enabled": false, "failingDuration": "2h", "minFailedRuns": 5 },
+            "notifications": {
+                "clusterName": "roanoke",
+                "reasons": ["ReapPlanned"],
+                "minInterval": "30m",
+                "channels": { "ops-discord": { "reasons": ["ReapPlanned"] } }
+            }
         }))
         .unwrap();
         let c = spec.to_config().unwrap();
@@ -225,6 +275,10 @@ mod tests {
         assert!(!c.cron_jobs.enabled);
         assert_eq!(c.cron_jobs.failing_duration, Duration::from_hours(2));
         assert_eq!(c.cron_jobs.min_failed_runs, 5);
+        assert_eq!(c.notifications.cluster_name, "roanoke");
+        assert!(c.notifications.reasons.contains("ReapPlanned"));
+        assert_eq!(c.notifications.min_interval, Duration::from_mins(30));
+        assert!(c.notifications.channels["ops-discord"].contains("ReapPlanned"));
     }
 
     #[test]

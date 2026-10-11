@@ -266,16 +266,17 @@ reaper must work the same with none configured.
 **Independent Test**: In a dev cluster, create the Secret
 `k8s-reaper-notifications` with one key holding a webhook URL pointing at a
 local echo server, and one `smtp://` URL pointing at a local mail catcher. Run
-the US1 fixtures in report mode. Each receives one `ReapPlanned` message per
-candidate, and nothing repeats on later cycles. Deleting the Secret stops the
+the US1 fixtures in report mode with `notifications.reasons: [ReapPlanned]`.
+Each receives one `ReapPlanned` message per candidate, and nothing repeats on later cycles. Deleting the Secret stops the
 messages without a restart.
 
 **Acceptance Scenarios**:
 
 1. **Given** no notifications Secret is mounted, **When** cycles run, **Then**
    the reaper makes no outbound connection and behaves exactly as in US1–US5.
-2. **Given** a mounted Secret key holding a Discord webhook URL, **When** a
-   workload becomes a candidate in report mode, **Then** the channel receives
+2. **Given** a mounted Secret key holding a Discord webhook URL and
+   `ReapPlanned` among the notified reasons, **When** a workload becomes a
+   candidate in report mode, **Then** the channel receives
    one Discord message naming the workload, the reason, the crash-loop start
    and what full mode would do.
 3. **Given** a key holding an `smtp://` or `smtps://` URL with `from` and `to`,
@@ -615,7 +616,7 @@ messages without a restart.
 
 ## Owner Decisions
 
-Questions 1–5 were answered on 2026-10-10. Question 6 is open.
+All six questions were answered on 2026-10-10.
 
 ### Question 1: API group and annotation prefix
 
@@ -658,11 +659,20 @@ taken to mean per-workload threshold overrides (FR-034, US4 scenario 6). They
 are annotations a team sets on its own workload, and they can only raise
 thresholds. Global settings stay in `ReaperConfig`.
 
-### Question 6: Notifications (open)
+### Question 6: Notifications
 
 Asked 2026-10-10 with the request "add provisions for discord or other webhook
 providers or email if smtp is set up via secret". US6 and FR-035 to FR-041
-record a proposed design; nothing is built until these are answered.
+record the design.
+
+**Answer** (2026-10-10): "yes to all three, go ahead with notifications". A:
+`reqwest` and `lettre` in `crates/reaper-notify`. B: the chart mounts the
+Secret as files; the ClusterRole keeps no Secret access. C: `ReapPlanned` is
+too noisy as a default, so the default reasons are `Reaped`, `ReapFailed`,
+`Restored`, `RestoreFailed`, `HelmReleaseHeld` and `ConfigInvalid`;
+`ReapPlanned` is opt-in. D stays as proposed.
+
+The question as asked:
 
 - **A. New dependencies.** Sending needs an HTTP client and an SMTP client.
   Proposed: `reqwest` (rustls, no default features) and `lettre` (rustls,

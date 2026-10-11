@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 
 use crate::config::Mode;
 use crate::model::{Snapshot, WorkloadRef, WorkloadView};
+use crate::notify::Notification;
 use crate::plan::{Action, CyclePlan, Decision, Evidence, Plan, SkipReason, Transition};
 use crate::ports::{
     ClusterWriter, EventRecord, EventSink, EventType, Telemetry, WorkloadRow, WriteError,
@@ -36,6 +37,9 @@ pub struct Outcome {
     pub failures: Vec<Failure>,
     /// Events that could not be published; they are not retried.
     pub event_failures: Vec<(WorkloadRef, &'static str, WriteError)>,
+    /// Every transition this cycle, for notification channels (US6). Sent
+    /// whether or not its Event was published.
+    pub notifications: Vec<Notification>,
 }
 
 /// Runs one cycle's plan. With the global mode `Off` nothing is written.
@@ -106,6 +110,15 @@ where
                     .event_failures
                     .push((decision.workload.clone(), event.reason, e));
             }
+            outcome.notifications.push(Notification {
+                reason: event.reason,
+                event_type: event.event_type,
+                regarding: event.regarding,
+                state: desired.state,
+                mode,
+                note: event.note,
+                time: snap.now,
+            });
         }
 
         // Mode gate (FR-012): report mode stops here. Executing the reap
@@ -363,6 +376,7 @@ mod tests {
         let r = run(&looping(Some("observed"), Some(5), 3), Mode::Report);
         assert_eq!(r.writer.calls(), Vec::<Call>::new());
         assert_eq!(r.events.reasons(), Vec::<&str>::new());
+        assert_eq!(r.outcome.notifications, Vec::new());
         assert_eq!(
             r.telemetry.rows.lock().unwrap()[0].crashloop_seconds,
             Some(300)
@@ -382,6 +396,14 @@ mod tests {
         assert!(
             note.contains("full mode would: record 2 original replicas"),
             "{note}"
+        );
+        // The same transition goes to notifications, with the Event's note.
+        let [n] = r.outcome.notifications.as_slice() else {
+            panic!("{:?}", r.outcome.notifications)
+        };
+        assert_eq!(
+            (n.reason, n.state, n.mode, &n.note),
+            ("ReapPlanned", Some(State::Candidate), Mode::Report, note)
         );
 
         // Next cycle, already a candidate with the same plan: silent.

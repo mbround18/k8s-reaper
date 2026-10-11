@@ -43,12 +43,15 @@ the reaper running with notifications off.
 | `https://hooks.slack.com/…`                                    | `slack`   | `{"text": <text>}` (also works for Mattermost/Rocket.Chat incoming hooks via `generic` with `?format=slack`) |
 | `smtp://…` (STARTTLS required) or `smtps://…` (implicit TLS)   | `email`   | Plain-text mail; subject `[k8s-reaper] <Reason> <kind>/<ns>/<name>` |
 | any other `https://…`                                          | `generic` | The JSON document below                                        |
-| `http://…`                                                     | refused unless `?insecure=true`; reported as an invalid channel |
+| `http://…`                                                     | refused unless `?insecure=true`; reported as an invalid channel | |
 
 A `?format=discord|slack|generic` query parameter overrides inference; it is
 stripped before the request is sent. Email takes `from` (required) and `to`
 (required, comma-separated) as query parameters, and credentials from the URL
-user info (percent-encoded). Plain SMTP without STARTTLS is refused.
+user info (percent-encoded). `smtp://` requires STARTTLS; `smtp://…?insecure=true`
+allows an unencrypted connection (for a local mail catcher in dev only), as
+`http://…?insecure=true` does for webhooks. `insecure` is stripped before
+sending.
 
 Generic payload (stable, versioned by `schema`):
 
@@ -79,23 +82,24 @@ spec:
   notifications:
     enabled: true                     # master switch; channels still come from the Secret
     clusterName: roanoke
-    reasons: [ReapPlanned, Reaped, ReapFailed, Restored, RestoreFailed, HelmReleaseHeld, ConfigInvalid]
+    reasons: [Reaped, ReapFailed, Restored, RestoreFailed, HelmReleaseHeld, ConfigInvalid]
     minInterval: 1h                   # per workload and reason; repeats inside it are dropped
     channels:                         # optional per-channel reason filter, by channel name
       ops-discord: { reasons: [Reaped, ReapFailed, RestoreFailed] }
 ```
 
-The `reasons` default is the list above: the transitions a person may need to
-act on. `CrashLoopObserved`, `CrashLoopRecovered` and `ReapSkipped` are opt-in
-because they are frequent. The config holds no URLs and no secrets.
+The `reasons` default is the list above: the transitions a person must act
+on. `ReapPlanned`, `ReapSkipped`, `CrashLoopObserved` and `CrashLoopRecovered`
+are opt-in because they are frequent, above all while the cluster runs in
+report mode (Question 6). The config holds no URLs and no secrets.
 
 ## Delivery
 
 - Sent after the cycle's writes, from a bounded queue (256 entries; overflow
   drops the oldest and counts it). A slow or failing channel never delays a
   cycle or a reap.
-- Per-message timeout 10 s. Up to 3 attempts with exponential backoff (1 s,
-  4 s, 16 s); `429` honours `Retry-After` up to 60 s. `4xx` other than `408`
+- Per-message timeout 10 s. Up to 3 attempts, waiting 1 s and then 4 s
+  between them; `429` honours `Retry-After` up to 60 s. `4xx` other than `408`
   and `429` is not retried.
 - At-most-once across restarts: the queue is in memory and lost on restart.
   Events and metrics stay the durable record.

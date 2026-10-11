@@ -118,6 +118,46 @@ spec:
                 - report
                 - full
                 type: string
+              notifications:
+                description: |-
+                  Which transitions reach notification channels (US6). Channel URLs come
+                  from a mounted Secret, never from here.
+                nullable: true
+                properties:
+                  channels:
+                    additionalProperties:
+                      properties:
+                        reasons:
+                          default: []
+                          description: Reasons this channel receives, out of `notifications.reasons`.
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    description: Per-channel reason filters, keyed by the channel's Secret key.
+                    nullable: true
+                    type: object
+                  clusterName:
+                    description: Cluster name shown in messages.
+                    maxLength: 63
+                    nullable: true
+                    type: string
+                  enabled:
+                    description: Master switch (default true); with no channels mounted nothing is sent anyway.
+                    nullable: true
+                    type: boolean
+                  minInterval:
+                    description: Drop repeats for the same object and reason inside this window (0s–24h, default 1h).
+                    nullable: true
+                    pattern: ^([0-9]+[hms])+$
+                    type: string
+                  reasons:
+                    description: 'Event reasons to send (default: `Reaped`, `ReapFailed`, `Restored`, `RestoreFailed`, `HelmReleaseHeld`, `ConfigInvalid`).'
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                type: object
               scope:
                 nullable: true
                 properties:
