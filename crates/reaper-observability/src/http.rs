@@ -2,8 +2,9 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::extract::State;
@@ -14,13 +15,20 @@ use prometheus_client::registry::Registry;
 
 const OPENMETRICS: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
 
-/// Shared liveness and readiness flags, set by the cycle loop.
+/// A cycle older than this many intervals makes the reaper unready.
+pub const STALE_CYCLES: u32 = 3;
+
+/// Shared liveness and readiness, set by the cycle loop.
 ///
-/// A new `Health` is alive and not ready; clones share the same flags.
+/// A new `Health` is alive and not ready; clones share the same state. Ready
+/// means the flag is set and the last cycle finished less than
+/// [`STALE_CYCLES`] intervals ago.
 #[derive(Debug, Clone)]
 pub struct Health {
     alive: Arc<AtomicBool>,
     ready: Arc<AtomicBool>,
+    /// When the last finished cycle goes stale; `None` before the first.
+    stale_at: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Health {
@@ -29,7 +37,25 @@ impl Health {
         Self {
             alive: Arc::new(AtomicBool::new(true)),
             ready: Arc::new(AtomicBool::new(false)),
+            stale_at: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// A cycle finished at `now`; the next one is due within `interval`.
+    pub fn cycle_finished(&self, now: Instant, interval: Duration) {
+        *self.stale_at.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(now + interval * STALE_CYCLES);
+    }
+
+    /// Whether `/readyz` answers 200 at `now`.
+    #[must_use]
+    pub fn ready_at(&self, now: Instant) -> bool {
+        self.ready.load(Ordering::Relaxed)
+            && self
+                .stale_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some_and(|stale_at| now < stale_at)
     }
 
     pub fn set_alive(&self, alive: bool) {
@@ -91,7 +117,11 @@ async fn healthz(State(state): State<AppState>) -> StatusCode {
 }
 
 async fn readyz(State(state): State<AppState>) -> StatusCode {
-    flag(&state.health.ready)
+    if state.health.ready_at(Instant::now()) {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 async fn metrics(State(state): State<AppState>) -> Response {
@@ -104,7 +134,6 @@ async fn metrics(State(state): State<AppState>) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -156,6 +185,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_stale_cycle_makes_the_reaper_unready() {
+        let health = Health::new();
+        let t0 = Instant::now();
+        let interval = Duration::from_secs(60);
+        health.set_ready(true);
+        assert!(!health.ready_at(t0), "no cycle has finished yet");
+        health.cycle_finished(t0, interval);
+        assert!(health.ready_at(t0 + Duration::from_secs(179)));
+        assert!(!health.ready_at(t0 + Duration::from_secs(180)));
+        health.cycle_finished(t0 + Duration::from_secs(170), interval);
+        assert!(health.ready_at(t0 + Duration::from_secs(300)));
+        health.set_ready(false);
+        assert!(!health.ready_at(t0 + Duration::from_secs(300)));
+    }
+
     #[tokio::test]
     async fn readyz_starts_unready_and_follows_the_flag() {
         let health = Health::new();
@@ -163,6 +208,7 @@ mod tests {
             get(router(health.clone(), registry()), "/readyz").await.0,
             StatusCode::SERVICE_UNAVAILABLE
         );
+        health.cycle_finished(Instant::now(), Duration::from_mins(1));
         health.set_ready(true);
         assert_eq!(
             get(router(health.clone(), registry()), "/readyz").await.0,

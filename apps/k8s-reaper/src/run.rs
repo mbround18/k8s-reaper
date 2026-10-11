@@ -121,6 +121,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             CycleResult::Error
         };
         metrics.cycle(result, started.elapsed(), SystemTime::now());
+        health.cycle_finished(Instant::now(), config.cycle_interval);
         health.set_ready(true);
 
         // The next cycle runs at the tick, or sooner when a watched change
