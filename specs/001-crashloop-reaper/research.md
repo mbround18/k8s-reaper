@@ -74,9 +74,17 @@ checked read-only on 2026-10-10.
   atomic.
 - **Known effect**: while disabled, fixes pushed to Git do not reach the
   object. That is why restore exists and the guide says "restore, then fix".
-- **To verify in integration**: that the Kustomization does not prune the
-  disabled object, and that a Kustomization with `force: true` still honours
-  the annotation.
+- **Verified in integration** (`apps/k8s-reaper/tests/us2_reap.rs`, Flux
+  v2.7 on kind, 2026-10-10):
+  - The Kustomization (`prune: true`) does not prune the disabled object.
+    After three forced reconciles, each one handled
+    (`status.lastHandledReconcileAt`), the Deployment keeps its UID, stays at
+    0 replicas and keeps `reconcile: disabled`. The object is still in the
+    source and the inventory, so it is never stale, and the controller skips
+    applying it.
+  - With `force: true` the controller still honours the annotation. A forced
+    reconcile with `force: true` neither recreates the Deployment (same UID)
+    nor restores its replicas.
 
 ## R5 — HelmRelease-managed workloads
 

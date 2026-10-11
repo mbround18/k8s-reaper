@@ -106,7 +106,7 @@ and a `plan` annotation. No replicas or Flux object changes.
 - [X] T045 [P] [US2] Implement the minimal HelmRelease v2 type and `ApiResource` in `crates/reaper-flux/src/helmrelease.rs`
 - [X] T046 [US2] Implement HelmRelease hold/release patches in `crates/reaper-flux/src/holds.rs` (part of the `ClusterWriter` impl, composed in the app)
 - [X] T047 [US2] Implement scale via the `scale` subresource and the kustomize reconcile annotation patch in `crates/reaper-kube/src/writer.rs`
-- [ ] T048 [US2] Write integration test `apps/k8s-reaper/tests/us2_reap.rs` (`#[ignore]`). It covers plain, kustomize and Helm fixtures; replicas stay 0 through three forced Flux reconciles (SC-002); `PartiallyAvailable` is untouched; and it verifies research R4's prune/force questions.
+- [X] T048 [US2] Write integration test `apps/k8s-reaper/tests/us2_reap.rs` (`#[ignore]`). It covers plain, kustomize and Helm fixtures; replicas stay 0 through three forced Flux reconciles (SC-002); `PartiallyAvailable` is untouched; and it verifies research R4's prune/force questions.
 
 **Checkpoint**: full mode works; restore is not done yet, so do not enable full mode outside dev.
 
@@ -135,7 +135,7 @@ its pre-reap state.
 - [X] T052 [US3] Implement the `Restore` plan and the deleted/recreated-workload cleanup of `held-for` in `crates/reaper-core/src/decide.rs`
 - [X] T053 [US3] Implement restore execution in `crates/reaper-core/src/executor.rs` and the release patch in `crates/reaper-flux/src/holds.rs`
 - [X] T054 [US3] Trigger an immediate cycle on a `restore` annotation change, or a replicas change on a `reaped` workload, from the watch stream in `crates/reaper-kube/src/snapshot.rs` and `apps/k8s-reaper/src/main.rs`
-- [ ] T055 [US3] Write integration test `apps/k8s-reaper/tests/us3_restore.rs` (`#[ignore]`). It checks an exact pre-reap state diff after restore for each fixture (SC-003).
+- [X] T055 [US3] Write integration test `apps/k8s-reaper/tests/us3_restore.rs` (`#[ignore]`). It checks an exact pre-reap state diff after restore for each fixture (SC-003).
 
 **Checkpoint**: full mode is safe to enable.
 
