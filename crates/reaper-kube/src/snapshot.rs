@@ -21,6 +21,7 @@ use kube::runtime::reflector::{self, Store, store::Writer};
 use kube::runtime::{WatchStreamExt, watcher};
 use kube::{Client, Resource, ResourceExt};
 use reaper_core::Timestamp;
+use reaper_core::decide::wants_immediate_cycle;
 use reaper_core::model::{
     ContainerView, FluxRefs, HelmReleaseView, NamespaceView, NsName, OwnerRef, PodView, Snapshot,
     Termination, WorkloadKind, WorkloadRef, WorkloadView,
@@ -28,6 +29,7 @@ use reaper_core::model::{
 use reaper_core::record::{FLUX_RECONCILE, MODE_KEY, PREFIX, STATE_LABEL};
 use reaper_flux::helmrelease::{self, HelmRelease};
 use serde::de::DeserializeOwned;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 const KUSTOMIZE_NAME: &str = "kustomize.toolkit.fluxcd.io/name";
@@ -356,6 +358,7 @@ pub struct Caches {
     hpas: Store<HorizontalPodAutoscaler>,
     scaled_objects: Option<Store<DynamicObject>>,
     helm_releases: Option<Store<HelmRelease>>,
+    trigger: Arc<Notify>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -383,18 +386,20 @@ impl Caches {
             store
         });
         let helm_releases = flux.map(|_| typed(&client, &mut tasks));
+        let trigger = Arc::new(Notify::new());
 
         Ok(Caches {
             reaper_namespace: reaper_namespace.into(),
             namespaces: typed(&client, &mut tasks),
             pods: typed(&client, &mut tasks),
             replica_sets: typed(&client, &mut tasks),
-            deployments: typed(&client, &mut tasks),
-            stateful_sets: typed(&client, &mut tasks),
+            deployments: triggering(&client, &mut tasks, &trigger, deployment_view),
+            stateful_sets: triggering(&client, &mut tasks, &trigger, stateful_set_view),
             daemon_sets: typed(&client, &mut tasks),
             hpas: typed(&client, &mut tasks),
             scaled_objects,
             helm_releases,
+            trigger,
             tasks,
         })
     }
@@ -407,6 +412,13 @@ impl Caches {
     #[must_use]
     pub fn flux_enabled(&self) -> bool {
         self.helm_releases.is_some()
+    }
+
+    /// Resolves when a watched change wants a cycle before the next tick
+    /// ([`wants_immediate_cycle`]). Changes while no one waits are kept as
+    /// one pending wake-up.
+    pub async fn triggered(&self) {
+        self.trigger.notified().await;
     }
 
     /// Resolves once every cache has completed its initial list.
@@ -484,7 +496,41 @@ where
     store
 }
 
+/// Like [`typed`], and wakes `trigger` when an update (not the initial list)
+/// leaves a workload that wants a cycle now.
+fn triggering<K>(
+    client: &Client,
+    tasks: &mut Vec<JoinHandle<()>>,
+    trigger: &Arc<Notify>,
+    view: fn(&K) -> WorkloadView,
+) -> Store<K>
+where
+    K: Resource<DynamicType = ()> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
+{
+    let (store, writer) = reflector::store();
+    let trigger = Arc::clone(trigger);
+    let on_apply = move |obj: &K| {
+        if wants_immediate_cycle(&view(obj)) {
+            trigger.notify_one();
+        }
+    };
+    tasks.push(watch_with(Api::all(client.clone()), writer, on_apply));
+    store
+}
+
 fn watch<K>(api: Api<K>, writer: Writer<K>) -> JoinHandle<()>
+where
+    K: Resource + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
+    K::DynamicType: Eq + Hash + Clone + Send + Sync,
+{
+    watch_with(api, writer, |_: &K| {})
+}
+
+fn watch_with<K>(
+    api: Api<K>,
+    writer: Writer<K>,
+    on_apply: impl Fn(&K) + Send + 'static,
+) -> JoinHandle<()>
 where
     K: Resource + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
     K::DynamicType: Eq + Hash + Clone + Send + Sync,
@@ -492,9 +538,11 @@ where
     let stream = watcher(api, watcher::Config::default().any_semantic())
         .default_backoff()
         .modify(|o| o.managed_fields_mut().clear());
-    tokio::spawn(reflector::reflector(writer, stream).for_each(|event| {
-        if let Err(e) = event {
-            tracing::warn!(error = %e, "watch error; retrying with backoff");
+    tokio::spawn(reflector::reflector(writer, stream).for_each(move |event| {
+        match event {
+            Ok(watcher::Event::Apply(obj)) => on_apply(&obj),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "watch error; retrying with backoff"),
         }
         futures::future::ready(())
     }))

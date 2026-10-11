@@ -20,10 +20,23 @@ use crate::plan::{
     Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, RestoreKind, SkipReason, StaleHold,
 };
 use crate::record::{
-    CRASHLOOP_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold, MIN_RESTARTS, MODE_KEY, State,
-    WorkloadRecord,
+    CRASHLOOP_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold, MIN_RESTARTS, MODE_KEY, RESTORE,
+    State, WorkloadRecord,
 };
 use crate::time::parse_duration;
+
+/// A change to this workload should start a cycle now rather than at the
+/// next tick (T054): a person asked for a restore, or scaled a reaped
+/// workload back up.
+#[must_use]
+pub fn wants_immediate_cycle(w: &WorkloadView) -> bool {
+    let restore = w
+        .reaper_annotations
+        .get(RESTORE)
+        .is_some_and(|v| !v.is_empty());
+    let reaped = w.state_label.as_deref().and_then(|s| s.parse().ok()) == Some(State::Reaped);
+    restore || (reaped && w.spec_replicas.is_some_and(|n| n > 0))
+}
 
 /// Decides every in-scope workload. Decisions come back longest crash-looping
 /// first, then by namespace and name (FR-017).
@@ -477,7 +490,7 @@ mod tests {
     use crate::model::{NsName, WorkloadRef};
     use crate::record::{
         CRASHLOOP_SINCE, HEALTHY_SINCE, HELMRELEASE, ORIGINAL_REPLICAS, PREVIOUS_RECONCILE,
-        PreviousReconcile, RESTORE,
+        PreviousReconcile,
     };
     use crate::testing::{
         NOW, add_namespace, add_pod, crashlooping_container, deployment, healthy_container,
@@ -1218,5 +1231,24 @@ mod tests {
             .map(|s| s.workload.name.as_str())
             .collect();
         assert_eq!(stale, ["gone", "recreated"]);
+    }
+
+    #[test]
+    fn restore_or_scale_up_of_a_reaped_workload_wants_a_cycle_now() {
+        let mut w = deployment("app", "web");
+        assert!(!wants_immediate_cycle(&w));
+        w.reaper_annotations.insert(RESTORE.into(), String::new());
+        assert!(!wants_immediate_cycle(&w));
+        w.reaper_annotations.insert(RESTORE.into(), "true".into());
+        assert!(wants_immediate_cycle(&w));
+
+        let mut w = deployment("app", "web");
+        w.state_label = Some("reaped".into());
+        w.spec_replicas = Some(0);
+        assert!(!wants_immediate_cycle(&w));
+        w.spec_replicas = Some(2);
+        assert!(wants_immediate_cycle(&w));
+        w.state_label = Some("reaping".into());
+        assert!(!wants_immediate_cycle(&w));
     }
 }

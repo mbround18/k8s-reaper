@@ -123,8 +123,14 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         metrics.cycle(result, started.elapsed(), SystemTime::now());
         health.set_ready(true);
 
+        // The next cycle runs at the tick, or sooner when a watched change
+        // asks for one (T054), but never within MIN_GAP of this one.
         tokio::select! {
             () = tokio::time::sleep(config.cycle_interval) => {}
+            () = async {
+                caches.triggered().await;
+                tokio::time::sleep(MIN_GAP.saturating_sub(started.elapsed())).await;
+            } => info!("cycle triggered by a watched change"),
             () = stopped(stop.clone()) => break,
         }
     }
@@ -137,6 +143,11 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     let _ = server.await;
     Ok(())
 }
+
+/// The shortest time between the starts of two cycles when a watched change
+/// triggers one. Writes the reaper makes itself can wake the trigger, so this
+/// bounds the extra cycles they cause.
+const MIN_GAP: Duration = Duration::from_secs(2);
 
 /// How long shutdown waits for queued notifications (contracts/notifications.md).
 const NOTIFY_DRAIN: Duration = Duration::from_secs(5);
