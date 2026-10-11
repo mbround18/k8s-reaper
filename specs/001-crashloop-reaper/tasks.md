@@ -268,7 +268,7 @@ with the owner's agreement and saying so in the commit.
 - [X] G15 Full mode is gated in the executor until T044; a `Reaping` state currently plans nothing (`Plan::Nothing`) until US2/US3 — closed by T043/T044/T052
 - [X] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet. `us1_report` and `us6_notify` pass on kind (`make dev-kind … KUBE_CONTEXT=kind-fathom-dev`); later stories add their own
 - [X] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
-- [ ] G18 kube's event `Recorder` folds a repeat of the same object, reason, action and type into the first Event's series and keeps its note, so a second `ConfigApplied` still reads "generation 6 is active" and a later `ConfigInvalid` keeps the first error. The `Valid` condition and `activeGeneration` are correct; decide whether the note should change (put the generation in `action`, or publish without the recorder cache)
+- [X] G18 kube's event `Recorder` folds a repeat of the same object, reason, action and type into the first Event's series and keeps its note, so a second `ConfigApplied` still reads "generation 6 is active" and a later `ConfigInvalid` keeps the first error. The `Valid` condition and `activeGeneration` are correct; fixed: `KubeEventSink` keys the series on the note too, as client-go does
 
 ## Dependencies
 

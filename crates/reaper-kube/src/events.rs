@@ -1,10 +1,21 @@
-//! `EventSink` over the `events.k8s.io/v1` Recorder (contracts/events.md).
+//! `EventSink` over `events.k8s.io/v1` (contracts/events.md).
+//!
+//! kube's `Recorder` folds a repeat of the same object, reason, action and
+//! type into the first Event's series and keeps that Event's note, so a later
+//! transition with a different note would show the old one (G18). Here the
+//! note is part of the key, as in client-go: an identical repeat within
+//! [`SERIES_TTL`] bumps the series, anything else is a new Event.
 
+use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 
 use k8s_openapi::api::core::v1::ObjectReference;
-use kube::Client;
-use kube::runtime::events::{self, Event, Recorder, Reporter};
+use k8s_openapi::api::events::v1::{Event, EventSeries};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta};
+use k8s_openapi::jiff::{SignedDuration, Timestamp};
+use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::{Client, ResourceExt as _};
 use reaper_core::model::ObjectRef;
 use reaper_core::ports::{EventRecord, EventSink, EventType, WriteError};
 
@@ -16,23 +27,29 @@ pub const REPORTING_CONTROLLER: &str = "reaper.boop.ninja/k8s-reaper";
 /// Event notes are capped at 1 KB.
 pub const NOTE_LIMIT: usize = 1024;
 
+/// How long an identical repeat continues an Event's series (kube's value).
+pub const SERIES_TTL: SignedDuration = SignedDuration::from_mins(6);
+
+/// What makes two publishes the same Event.
+type Key = (ObjectRef, &'static str, &'static str, bool, String);
+
 #[derive(Clone)]
 pub struct KubeEventSink {
-    recorder: Recorder,
+    client: Client,
+    instance: String,
     uids: Option<Uids>,
+    recent: Arc<Mutex<BTreeMap<Key, Event>>>,
 }
 
 impl KubeEventSink {
     /// `instance` is the reporting instance, normally the pod name.
     #[must_use]
     pub fn new(client: Client, instance: impl Into<String>) -> Self {
-        let reporter = Reporter {
-            controller: REPORTING_CONTROLLER.into(),
-            instance: Some(instance.into()),
-        };
         KubeEventSink {
-            recorder: Recorder::new(client, reporter),
+            client,
+            instance: instance.into(),
             uids: None,
+            recent: Arc::default(),
         }
     }
 
@@ -43,6 +60,78 @@ impl KubeEventSink {
         self.uids = Some(uids);
         self
     }
+
+    /// The Event to write for `record` at `now`: the recent identical one with
+    /// its series bumped, or a new one.
+    fn next(&self, record: &EventRecord, key: &Key, now: Timestamp) -> Event {
+        let mut recent = self
+            .recent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recent.retain(|_, e| last_seen(e).is_some_and(|t| t + SERIES_TTL > now));
+        if let Some(previous) = recent.get(key) {
+            let mut event = previous.clone();
+            event.series = Some(EventSeries {
+                count: previous.series.as_ref().map_or(2, |s| s.count + 1),
+                last_observed_time: MicroTime(now),
+            });
+            return event;
+        }
+        let uid = self.uids.as_ref().and_then(|u| u.get(&record.regarding));
+        new_event(
+            record,
+            object_reference(&record.regarding, uid),
+            &self.instance,
+            now,
+        )
+    }
+}
+
+fn last_seen(e: &Event) -> Option<Timestamp> {
+    e.series
+        .as_ref()
+        .map(|s| s.last_observed_time.0)
+        .or(e.event_time.as_ref().map(|t| t.0))
+}
+
+fn new_event(
+    record: &EventRecord,
+    regarding: ObjectReference,
+    instance: &str,
+    now: Timestamp,
+) -> Event {
+    Event {
+        metadata: ObjectMeta {
+            name: Some(format!(
+                "{}.{:x}",
+                record.regarding.name,
+                now.as_nanosecond()
+            )),
+            namespace: Some(namespace(&regarding).to_owned()),
+            ..ObjectMeta::default()
+        },
+        action: Some(record.action.to_owned()),
+        reason: Some(record.reason.to_owned()),
+        type_: Some(event_type(record.event_type).to_owned()),
+        note: Some(truncate_note(&record.note).to_owned()),
+        event_time: Some(MicroTime(now)),
+        regarding: Some(regarding),
+        reporting_controller: Some(REPORTING_CONTROLLER.to_owned()),
+        reporting_instance: Some(instance.to_owned()),
+        ..Event::default()
+    }
+}
+
+fn event_type(t: EventType) -> &'static str {
+    match t {
+        EventType::Normal => "Normal",
+        EventType::Warning => "Warning",
+    }
+}
+
+/// Events about cluster-scoped objects live in `default`.
+fn namespace(regarding: &ObjectReference) -> &str {
+    regarding.namespace.as_deref().unwrap_or("default")
 }
 
 /// The `regarding` reference. Events about cluster-scoped objects land in
@@ -73,35 +162,41 @@ pub fn truncate_note(note: &str) -> &str {
     &note[..end]
 }
 
-fn event(record: &EventRecord) -> Event {
-    Event {
-        type_: match record.event_type {
-            EventType::Normal => events::EventType::Normal,
-            EventType::Warning => events::EventType::Warning,
-        },
-        reason: record.reason.to_owned(),
-        note: Some(truncate_note(&record.note).to_owned()),
-        action: record.action.to_owned(),
-        secondary: None,
-    }
-}
-
 impl EventSink for KubeEventSink {
     fn publish(
         &self,
         event_record: &EventRecord,
     ) -> impl Future<Output = Result<(), WriteError>> + Send {
-        let ev = event(event_record);
-        let uid = self
-            .uids
-            .as_ref()
-            .and_then(|u| u.get(&event_record.regarding));
-        let reference = object_reference(&event_record.regarding, uid);
+        let key: Key = (
+            event_record.regarding.clone(),
+            event_record.reason,
+            event_record.action,
+            event_record.event_type == EventType::Warning,
+            truncate_note(&event_record.note).to_owned(),
+        );
+        let event = self.next(event_record, &key, Timestamp::now());
+        let api: Api<Event> = Api::namespaced(
+            self.client.clone(),
+            event.metadata.namespace.as_deref().unwrap_or("default"),
+        );
+        let recent = Arc::clone(&self.recent);
         async move {
-            self.recorder
-                .publish(&ev, &reference)
+            if event.series.is_some() {
+                api.patch(
+                    &event.name_any(),
+                    &PatchParams::default(),
+                    &Patch::Merge(&event),
+                )
                 .await
-                .map_err(write_error)
+            } else {
+                api.create(&PostParams::default(), &event).await
+            }
+            .map_err(write_error)?;
+            recent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key, event);
+            Ok(())
         }
     }
 }
@@ -187,11 +282,19 @@ mod tests {
             action: "Plan",
             note: "would scale to 0".into(),
         };
-        let ev = event(&record);
-        assert_eq!(ev.type_, events::EventType::Warning);
-        assert_eq!(ev.reason, "ReapPlanned");
-        assert_eq!(ev.action, "Plan");
+        let now = Timestamp::from_second(1_000).unwrap();
+        let ev = new_event(
+            &record,
+            object_reference(&record.regarding, None),
+            "pod-1",
+            now,
+        );
+        assert_eq!(ev.type_.as_deref(), Some("Warning"));
+        assert_eq!(ev.reason.as_deref(), Some("ReapPlanned"));
+        assert_eq!(ev.action.as_deref(), Some("Plan"));
         assert_eq!(ev.note.as_deref(), Some("would scale to 0"));
-        assert!(ev.secondary.is_none());
+        assert_eq!(ev.metadata.namespace.as_deref(), Some("shop"));
+        assert_eq!(ev.reporting_instance.as_deref(), Some("pod-1"));
+        assert!(ev.related.is_none());
     }
 }

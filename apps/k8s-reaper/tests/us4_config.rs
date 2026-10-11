@@ -127,10 +127,15 @@ fn applied(c: &DynamicObject) -> bool {
         && valid(c).is_some_and(|v| v["status"] == "True" && v["observedGeneration"] == g)
 }
 
-/// An Event on the ReaperConfig with this reason, emitted or repeated at or
-/// after `since`. kube's recorder folds a repeat into the first Event's series
-/// and keeps its note, so the note cannot tell generations apart.
-async fn config_event(client: &Client, reason: &str, since: jiff::Timestamp) -> bool {
+/// An Event on the ReaperConfig with this reason about `generation`, emitted
+/// or repeated at or after `since` (G18: a new note is a new Event).
+async fn config_event(
+    client: &Client,
+    reason: &str,
+    generation: i64,
+    since: jiff::Timestamp,
+) -> bool {
+    let needle = format!("generation {generation} ");
     // Events about cluster-scoped objects live in `default`.
     let events: Api<Event> = Api::namespaced(client.clone(), "default");
     events
@@ -148,6 +153,7 @@ async fn config_event(client: &Client, reason: &str, since: jiff::Timestamp) -> 
             e.reason.as_deref() == Some(reason)
                 && e.regarding.as_ref().and_then(|r| r.kind.as_deref()) == Some("ReaperConfig")
                 && last.is_some_and(|t| t >= since)
+                && e.note.as_deref().is_some_and(|n| n.starts_with(&needle))
         })
 }
 
@@ -184,7 +190,7 @@ async fn config_changes_apply_without_a_restart() {
     // Scenario 1: the running reaper picks the new generation up.
     config_until(&client, "applied the full-mode generation", applied).await;
     let active = generation(&full::reaper_configs(&client).get("default").await.unwrap());
-    assert!(config_event(&client, "ConfigApplied", since).await);
+    assert!(config_event(&client, "ConfigApplied", active, since).await);
 
     // Scenario 4: an invalid generation is reported and the last valid one
     // stays active.
@@ -195,7 +201,8 @@ async fn config_changes_apply_without_a_restart() {
             && c.data["status"]["activeGeneration"] == active
     })
     .await;
-    assert!(config_event(&client, "ConfigInvalid", since).await);
+    let invalid = generation(&full::reaper_configs(&client).get("default").await.unwrap());
+    assert!(config_event(&client, "ConfigInvalid", invalid, since).await);
     full::patch_config(&client, &json!({ "cycleInterval": "15s" })).await;
     config_until(&client, "applied the fixed generation", applied).await;
 

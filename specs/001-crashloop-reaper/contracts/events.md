@@ -22,6 +22,10 @@ API `events.k8s.io/v1`. `reportingController: reaper.boop.ninja/k8s-reaper`.
 | `ConfigInvalid`      | Warning | ReaperConfig (or object) | `Validate`   | config, or a mode label value, failed validation; last valid config is kept                |
 | `ConfigApplied`      | Normal  | ReaperConfig             | `Validate`   | a new config generation became active                                                      |
 
+A repeat of the same object, reason, action, type and note within 6 minutes
+continues that Event's `series`; a different note is always a new Event, so the
+latest Event for a reason never carries an older note (G18).
+
 Note text is at most 1 KB, plain English, and always names the container,
 restart count and crash-loop start for workload Events. For CronJobs it names
 the failed run count, the failing-since time and the last failed Job.
