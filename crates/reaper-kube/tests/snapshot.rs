@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
+use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Namespace, Pod};
 use kube::api::DynamicObject;
 use reaper_core::Timestamp;
 use reaper_core::model::{
-    ContainerView, FluxRefs, HelmReleaseView, NamespaceView, NsName, OwnerRef, PodView,
-    Termination, WorkloadKind, WorkloadRef, WorkloadView,
+    ContainerView, CronJobView, FluxRefs, HelmReleaseView, JobOutcome, JobView, NamespaceView,
+    NsName, OwnerRef, PodView, Termination, WorkloadKind, WorkloadRef, WorkloadView,
 };
 use reaper_flux::helmrelease::HelmRelease;
 use reaper_kube::snapshot::{self, Objects};
@@ -94,6 +95,7 @@ fn healthy_helm_managed_deployment() {
                 ("reaper.boop.ninja/mode".into(), "report".into()),
             ]),
             state_label: Some("observed".into()),
+            cron_job: None,
         }
     );
 }
@@ -500,4 +502,108 @@ fn snapshot_without_keda_or_flux_is_empty_there() {
     let snap = snapshot::build_snapshot(&objects, Timestamp(0), "k8s-reaper");
     assert_eq!(snap.keda_targets, BTreeSet::new());
     assert_eq!(snap.helm_releases, BTreeMap::new());
+}
+
+fn at(rfc3339: &str) -> Timestamp {
+    Timestamp::parse_rfc3339(rfc3339).unwrap()
+}
+
+#[test]
+fn failed_job_finishes_when_failed_turns_true() {
+    let job: Job = fixture("job-failed.json");
+    assert_eq!(
+        snapshot::job_view(&job),
+        JobView {
+            name: "failing-29861473".into(),
+            outcome: JobOutcome::Failed {
+                at: at("2026-10-11T03:13:03Z"),
+                reason: Some("BackoffLimitExceeded".into()),
+            },
+        }
+    );
+}
+
+#[test]
+fn succeeded_job_finishes_at_completion_time() {
+    let job: Job = fixture("job-succeeded.json");
+    assert_eq!(
+        snapshot::job_view(&job).outcome,
+        JobOutcome::Succeeded {
+            at: at("2026-10-11T02:12:04Z")
+        }
+    );
+}
+
+#[test]
+fn active_job_and_failure_target_alone_are_running() {
+    let job: Job = fixture("job-active.json");
+    assert_eq!(snapshot::job_view(&job).outcome, JobOutcome::Running);
+
+    // Pods still terminating: FailureTarget is set, Failed is not yet.
+    let mut job: Job = fixture("job-failed.json");
+    let status = job.status.as_mut().unwrap();
+    status
+        .conditions
+        .as_mut()
+        .unwrap()
+        .retain(|c| c.type_ == "FailureTarget");
+    assert_eq!(snapshot::job_view(&job).outcome, JobOutcome::Running);
+}
+
+#[test]
+fn cron_job_view_carries_suspend_last_success_and_its_jobs() {
+    let cj: CronJob = fixture("cronjob-failing.json");
+    let failed: Job = fixture("job-failed.json");
+    let active: Job = fixture("job-active.json");
+    let w = snapshot::cron_job_view(&cj, &[&active, &failed]);
+    assert_eq!(
+        w.workload,
+        WorkloadRef::new(WorkloadKind::CronJob, "cron", "failing")
+    );
+    assert_eq!((w.spec_replicas, w.available_replicas), (None, 0));
+    assert_eq!(w.state_label.as_deref(), Some("observed"));
+    assert_eq!(
+        w.reaper_annotations["reaper.boop.ninja/last-failed-job"],
+        "failing-29861473"
+    );
+    assert_eq!(
+        w.cron_job,
+        Some(CronJobView {
+            suspended: false,
+            last_successful_time: Some(at("2026-10-11T01:10:00Z")),
+            // Sorted by name, whatever order they were listed in.
+            jobs: vec![snapshot::job_view(&failed), snapshot::job_view(&active),],
+        })
+    );
+}
+
+#[test]
+fn snapshot_groups_jobs_under_their_controlling_cron_job() {
+    let mut stray: Job = fixture("job-succeeded.json");
+    stray.metadata.name = Some("by-hand".into());
+    stray.metadata.owner_references = None;
+    let mut elsewhere: Job = fixture("job-succeeded.json");
+    elsewhere.metadata.namespace = Some("other".into());
+    let objects = Objects {
+        cron_jobs: vec![Arc::new(fixture("cronjob-failing.json"))],
+        jobs: vec![
+            Arc::new(fixture("job-failed.json")),
+            Arc::new(fixture("job-succeeded.json")),
+            Arc::new(stray),
+            Arc::new(elsewhere),
+        ],
+        ..Objects::default()
+    };
+    let snap = snapshot::build_snapshot(&objects, Timestamp(0), "k8s-reaper");
+    assert_eq!(snap.workloads.len(), 1);
+    let names: Vec<_> = snap.workloads[0]
+        .cron_job
+        .as_ref()
+        .unwrap()
+        .jobs
+        .iter()
+        .map(|j| j.name.as_str())
+        .collect();
+    // History limits prune Jobs; the view holds whatever is still listed.
+    assert_eq!(names, ["failing-29861412", "failing-29861473"]);
 }

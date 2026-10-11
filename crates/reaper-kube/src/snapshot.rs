@@ -13,8 +13,9 @@ use std::sync::Arc;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
+use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{ContainerState, ContainerStatus, Namespace, Pod};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 use kube::api::{Api, DynamicObject};
 use kube::core::{ApiResource, GroupVersionKind};
 use kube::runtime::reflector::{self, Store, store::Writer};
@@ -23,8 +24,9 @@ use kube::{Client, Resource, ResourceExt};
 use reaper_core::Timestamp;
 use reaper_core::decide::wants_immediate_cycle;
 use reaper_core::model::{
-    ContainerView, FluxRefs, HelmReleaseView, NamespaceView, NsName, ObjectKind, ObjectRef,
-    OwnerRef, PodView, Snapshot, Termination, WorkloadKind, WorkloadRef, WorkloadView,
+    ContainerView, CronJobView, FluxRefs, HelmReleaseView, JobOutcome, JobView, NamespaceView,
+    NsName, ObjectKind, ObjectRef, OwnerRef, PodView, Snapshot, Termination, WorkloadKind,
+    WorkloadRef, WorkloadView,
 };
 use reaper_core::record::{FLUX_RECONCILE, MODE_KEY, PREFIX, STATE_LABEL};
 use reaper_flux::helmrelease::{self, HelmRelease};
@@ -48,6 +50,8 @@ pub struct Objects {
     pub deployments: Vec<Arc<Deployment>>,
     pub stateful_sets: Vec<Arc<StatefulSet>>,
     pub daemon_sets: Vec<Arc<DaemonSet>>,
+    pub cron_jobs: Vec<Arc<CronJob>>,
+    pub jobs: Vec<Arc<Job>>,
     pub hpas: Vec<Arc<HorizontalPodAutoscaler>>,
     /// KEDA `ScaledObject`s; empty when the CRD is absent.
     pub scaled_objects: Vec<Arc<DynamicObject>>,
@@ -60,6 +64,16 @@ pub struct Objects {
 pub fn build_snapshot(objects: &Objects, now: Timestamp, reaper_namespace: &str) -> Snapshot {
     let hpa_targets: BTreeSet<WorkloadRef> =
         objects.hpas.iter().filter_map(|h| hpa_target(h)).collect();
+    let mut jobs_by_cron_job: BTreeMap<NsName, Vec<&Job>> = BTreeMap::new();
+    for job in &objects.jobs {
+        if let Some(owner) = controller_owner(&job.metadata).filter(|o| o.kind == "CronJob") {
+            let ns = job.metadata.namespace.clone().unwrap_or_default();
+            jobs_by_cron_job
+                .entry(NsName::new(ns, owner.name))
+                .or_default()
+                .push(job);
+        }
+    }
 
     let mut workloads: Vec<WorkloadView> = objects
         .deployments
@@ -67,6 +81,10 @@ pub fn build_snapshot(objects: &Objects, now: Timestamp, reaper_namespace: &str)
         .map(|d| deployment_view(d))
         .chain(objects.stateful_sets.iter().map(|s| stateful_set_view(s)))
         .chain(objects.daemon_sets.iter().map(|d| daemon_set_view(d)))
+        .chain(objects.cron_jobs.iter().map(|c| {
+            let jobs = jobs_by_cron_job.get(&ns_name(&c.metadata));
+            cron_job_view(c, jobs.map(Vec::as_slice).unwrap_or_default())
+        }))
         .map(|mut w| {
             w.has_hpa = hpa_targets.contains(&w.workload);
             w
@@ -157,6 +175,64 @@ pub fn daemon_set_view(d: &DaemonSet) -> WorkloadView {
     )
 }
 
+/// `jobs` are the Jobs this CronJob controls; [`build_snapshot`] groups them.
+#[must_use]
+pub fn cron_job_view(c: &CronJob, jobs: &[&Job]) -> WorkloadView {
+    let mut jobs: Vec<JobView> = jobs.iter().map(|j| job_view(j)).collect();
+    jobs.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut w = workload_view(WorkloadKind::CronJob, &c.metadata, None, 0);
+    w.cron_job = Some(CronJobView {
+        suspended: c.spec.suspend.unwrap_or(false),
+        last_successful_time: c
+            .status
+            .as_ref()
+            .and_then(|s| s.last_successful_time.as_ref())
+            .map(timestamp),
+        jobs,
+    });
+    w
+}
+
+/// A Job is finished once its `Complete` or `Failed` condition is true.
+#[must_use]
+pub fn job_view(job: &Job) -> JobView {
+    let status = job.status.as_ref();
+    let conditions = status
+        .and_then(|s| s.conditions.as_deref())
+        .unwrap_or_default();
+    let true_condition = |type_: &str| {
+        conditions
+            .iter()
+            .find(|c| c.type_ == type_ && c.status == "True")
+    };
+    let outcome = if let Some(c) = true_condition("Failed") {
+        JobOutcome::Failed {
+            at: c
+                .last_transition_time
+                .as_ref()
+                .map_or(Timestamp(0), timestamp),
+            reason: c.reason.clone(),
+        }
+    } else if let Some(c) = true_condition("Complete") {
+        let at = status
+            .and_then(|s| s.completion_time.as_ref())
+            .or(c.last_transition_time.as_ref());
+        JobOutcome::Succeeded {
+            at: at.map_or(Timestamp(0), timestamp),
+        }
+    } else {
+        JobOutcome::Running
+    };
+    JobView {
+        name: job.metadata.name.clone().unwrap_or_default(),
+        outcome,
+    }
+}
+
+fn timestamp(t: &Time) -> Timestamp {
+    Timestamp(t.0.as_second())
+}
+
 fn workload_view(
     kind: WorkloadKind,
     meta: &ObjectMeta,
@@ -181,6 +257,7 @@ fn workload_view(
         mode_annotation: get(annotations, MODE_KEY),
         reaper_annotations: reaper_annotations(annotations),
         state_label: get(labels, STATE_LABEL),
+        cron_job: None,
     }
 }
 
@@ -355,6 +432,8 @@ pub struct Caches {
     deployments: Store<Deployment>,
     stateful_sets: Store<StatefulSet>,
     daemon_sets: Store<DaemonSet>,
+    cron_jobs: Store<CronJob>,
+    jobs: Store<Job>,
     hpas: Store<HorizontalPodAutoscaler>,
     scaled_objects: Option<Store<DynamicObject>>,
     helm_releases: Option<Store<HelmRelease>>,
@@ -396,6 +475,8 @@ impl Caches {
             deployments: triggering(&client, &mut tasks, &trigger, deployment_view),
             stateful_sets: triggering(&client, &mut tasks, &trigger, stateful_set_view),
             daemon_sets: typed(&client, &mut tasks),
+            cron_jobs: triggering(&client, &mut tasks, &trigger, |c| cron_job_view(c, &[])),
+            jobs: typed(&client, &mut tasks),
             hpas: typed(&client, &mut tasks),
             scaled_objects,
             helm_releases,
@@ -429,6 +510,8 @@ impl Caches {
         self.deployments.wait_until_ready().await?;
         self.stateful_sets.wait_until_ready().await?;
         self.daemon_sets.wait_until_ready().await?;
+        self.cron_jobs.wait_until_ready().await?;
+        self.jobs.wait_until_ready().await?;
         self.hpas.wait_until_ready().await?;
         if let Some(s) = &self.scaled_objects {
             s.wait_until_ready().await?;
@@ -449,6 +532,8 @@ impl Caches {
             deployments: self.deployments.state(),
             stateful_sets: self.stateful_sets.state(),
             daemon_sets: self.daemon_sets.state(),
+            cron_jobs: self.cron_jobs.state(),
+            jobs: self.jobs.state(),
             hpas: self.hpas.state(),
             scaled_objects: self
                 .scaled_objects
@@ -472,6 +557,7 @@ impl Caches {
             deployments: self.deployments.clone(),
             stateful_sets: self.stateful_sets.clone(),
             daemon_sets: self.daemon_sets.clone(),
+            cron_jobs: self.cron_jobs.clone(),
             helm_releases: self.helm_releases.clone(),
         }
     }
@@ -482,8 +568,8 @@ impl Caches {
     }
 }
 
-/// Finds the uid of a cached object. Kinds the caches do not hold (CronJob,
-/// ReaperConfig) have none.
+/// Finds the uid of a cached object. The `ReaperConfig` is not cached and has
+/// none.
 #[derive(Clone)]
 pub struct Uids {
     namespaces: Store<Namespace>,
@@ -491,6 +577,7 @@ pub struct Uids {
     deployments: Store<Deployment>,
     stateful_sets: Store<StatefulSet>,
     daemon_sets: Store<DaemonSet>,
+    cron_jobs: Store<CronJob>,
     helm_releases: Option<Store<HelmRelease>>,
 }
 
@@ -504,7 +591,8 @@ impl Uids {
             ObjectKind::StatefulSet => uid_of(&self.stateful_sets, target),
             ObjectKind::DaemonSet => uid_of(&self.daemon_sets, target),
             ObjectKind::HelmRelease => self.helm_releases.as_ref().and_then(|s| uid_of(s, target)),
-            ObjectKind::CronJob | ObjectKind::ReaperConfig => None,
+            ObjectKind::CronJob => uid_of(&self.cron_jobs, target),
+            ObjectKind::ReaperConfig => None,
         }
     }
 }
@@ -637,6 +725,7 @@ mod tests {
             }]),
             stateful_sets: store(vec![]),
             daemon_sets: store(vec![]),
+            cron_jobs: store(vec![]),
             helm_releases: None,
         };
         let web = WorkloadRef::new(WorkloadKind::Deployment, "shop", "web").object_ref();
