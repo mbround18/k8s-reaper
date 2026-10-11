@@ -163,7 +163,7 @@ namespace leaving scope, both restore.
   - `restore_actions` already sets `resume` only when `suspended_by_reaper == Some(true)`. `hold.rs:103` resumes only when the release is still suspended, so a running release is not resumed again. Confirm this with the T136 test, and fix it there if not.
 
   Update the doc comments on `held_plan` and `namespace_in_scope`.
-- [ ] T140 [US3] Write the integration test `apps/k8s-reaper/tests/us8_letting_go.rs` (`#[ignore]`), covering quickstart §5:
+- [X] T140 [US3] Write the integration test `apps/k8s-reaper/tests/us8_letting_go.rs` (`#[ignore]`), covering quickstart §5:
   - `helm/crashloop` is reaped, then `flux resume`, then `Restored manual-resume` arrives within 1 cycle, followed by `HelmReleaseReleased`;
   - `plain/crashloop` is reaped, then `plain` is added to `excludeNamespaces`, then `Restored opted-out` arrives within 1 cycle and the Kustomization annotation is removed;
   - it restores the dev ReaperConfig in a drop guard.
