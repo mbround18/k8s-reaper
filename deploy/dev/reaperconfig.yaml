@@ -8,9 +8,9 @@ spec:
   mode: report
   cycleInterval: 15s # 10s–10m
   detection:
-    crashLoopDuration: 5m # 5m–7d (minimum)
+    crashLoopDuration: 5m # 5m–168h (minimum)
     minRestarts: 3 # 1–10000
-    recoveryWindow: 1m # 1m–1d (minimum)
+    recoveryWindow: 1m # 1m–24h (minimum)
   scope:
     excludeNamespaces: [kube-system, kube-public, kube-node-lease, flux-system]
     # Only the fixture namespaces, so the reaper leaves everything else alone
@@ -24,5 +24,5 @@ spec:
     helmRelease: true
   cronJobs:
     enabled: true
-    failingDuration: 10m # 10m–7d (minimum)
+    failingDuration: 10m # 10m–168h (minimum)
     minFailedRuns: 3 # 1–1000

@@ -30,7 +30,7 @@ spec:
     helmRelease: true          # suspend owning HelmReleases
   cronJobs:
     enabled: true              # observe CronJobs and pause ones that keep failing
-    failingDuration: 6h        # every run failed for this long (10m–7d)
+    failingDuration: 6h        # every run failed for this long (10m–168h)
     minFailedRuns: 3           # and at least this many failed runs (1–1000)
   notifications:               # US6; channel URLs come from a mounted Secret, never from here
     enabled: true

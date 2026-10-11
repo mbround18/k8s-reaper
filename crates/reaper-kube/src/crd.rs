@@ -62,7 +62,7 @@ pub enum SpecMode {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectionSpec {
-    /// Continuous crash-looping before a workload is a candidate (5m–7d, default 30m).
+    /// Continuous crash-looping before a workload is a candidate (5m–168h, default 30m).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(regex(pattern = DURATION_PATTERN))]
     pub crash_loop_duration: Option<String>,
@@ -70,7 +70,7 @@ pub struct DetectionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 10000))]
     pub min_restarts: Option<i64>,
-    /// Continuous health before state is cleared (1m–1d, default 10m).
+    /// Continuous health before state is cleared (1m–24h, default 10m).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(regex(pattern = DURATION_PATTERN))]
     pub recovery_window: Option<String>,
@@ -117,7 +117,7 @@ pub struct CronJobsSpec {
     /// Observe CronJobs and pause ones that keep failing (default true).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Every run failed for this long (10m–7d, default 6h).
+    /// Every run failed for this long (10m–168h, default 6h).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(regex(pattern = DURATION_PATTERN))]
     pub failing_duration: Option<String>,

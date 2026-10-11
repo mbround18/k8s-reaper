@@ -43,7 +43,7 @@ spec:
                     nullable: true
                     type: boolean
                   failingDuration:
-                    description: Every run failed for this long (10m–7d, default 6h).
+                    description: Every run failed for this long (10m–168h, default 6h).
                     nullable: true
                     pattern: ^([0-9]+[hms])+$
                     type: string
@@ -64,7 +64,7 @@ spec:
                 nullable: true
                 properties:
                   crashLoopDuration:
-                    description: Continuous crash-looping before a workload is a candidate (5m–7d, default 30m).
+                    description: Continuous crash-looping before a workload is a candidate (5m–168h, default 30m).
                     nullable: true
                     pattern: ^([0-9]+[hms])+$
                     type: string
@@ -76,7 +76,7 @@ spec:
                     nullable: true
                     type: integer
                   recoveryWindow:
-                    description: Continuous health before state is cleared (1m–1d, default 10m).
+                    description: Continuous health before state is cleared (1m–24h, default 10m).
                     nullable: true
                     pattern: ^([0-9]+[hms])+$
                     type: string

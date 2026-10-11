@@ -137,9 +137,9 @@ executes it. SC-004 compares the two byte for byte.
 | Field                         | Rule                                         | Default                                                         |
 | ----------------------------- | -------------------------------------------- | --------------------------------------------------------------- |
 | `mode`                        | `report` or `full`                           | `report`                                                        |
-| `detection.crashLoopDuration` | duration, 5m–7d                              | `30m`                                                           |
+| `detection.crashLoopDuration` | duration, 5m–168h                            | `30m`                                                           |
 | `detection.minRestarts`       | integer 1–10000                              | `10`                                                            |
-| `detection.recoveryWindow`    | duration, 1m–1d                              | `10m`                                                           |
+| `detection.recoveryWindow`    | duration, 1m–24h                            | `10m`                                                           |
 | `cycleInterval`               | duration, 10s–10m                            | `60s`                                                           |
 | `limits.maxReapsPerCycle`     | integer 0–50 (0 = report everything)         | `1`                                                             |
 | `limits.maxReaped`            | integer 0–500                                | `5`                                                             |
@@ -148,7 +148,7 @@ executes it. SC-004 compares the two byte for byte.
 | `flux.kustomize`              | bool                                         | `true`                                                          |
 | `flux.helmRelease`            | bool                                         | `true`                                                          |
 | `cronJobs.enabled`            | bool                                         | `true`                                                          |
-| `cronJobs.failingDuration`    | duration, 10m–7d                             | `6h`                                                            |
+| `cronJobs.failingDuration`    | duration, 10m–168h                           | `6h`                                                            |
 | `cronJobs.minFailedRuns`      | integer 1–1000                               | `3`                                                             |
 
 The CRD schema enforces type, enum and range. The core re-validates and
@@ -161,5 +161,5 @@ stays active (FR-026).
   object, never the Kustomization.
 - Workload 1 → 0..1 HelmRelease (labels). HelmRelease 1 → many workloads, via
   the `held-for` set.
-- ReaperConfig: exactly one is used (`default`); others are ignored with an
-  Event.
+- ReaperConfig: exactly one is used (`default`, or `--config-name`); the
+  reaper reads only that object, so others are never seen.
