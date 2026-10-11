@@ -13,13 +13,16 @@ make test            # fmt check, clippy -D warnings, core unit + adapter contra
 Expected: every core case passes in under 10 s (SC-007). Each case asserts
 report-mode plan JSON == full-mode plan JSON (SC-004).
 
-## 1. Local cluster (k3d + Flux)
+## 1. Local cluster (k3d or kind, with Flux)
 
 ```bash
 make dev-cluster     # k3d cluster, Flux installed, CRD applied, deploy/dev samples
 make image dev-load  # build via Dockerfile (cargo-chef), import into k3d
 make dev-run         # run the reaper in-cluster in namespace k8s-reaper, report mode
 ```
+
+To reuse an existing kind cluster that already runs Flux, pass its context to
+every target: `make dev-kind image dev-load dev-run KUBE_CONTEXT=kind-<name>`.
 
 `deploy/dev/` contains these fixtures:
 
@@ -33,10 +36,15 @@ make dev-run         # run the reaper in-cluster in namespace k8s-reaper, report
 | `job/fail`                | Job that fails                                                 | ignored                   |
 | `optout/crashloop`        | Deployment labelled `reaper.boop.ninja/mode=off`                | untouched                 |
 | `cron/failing`            | CronJob `* * * * *`, container exits 1                         | candidate → suspended (full) |
+| `sts/crashloop`           | StatefulSet, `replicas: 1`, `command: [false]`                 | candidate → reaped (full) |
+| `imagepull/missing`       | Deployment whose image does not exist (`ImagePullBackOff`)     | never a candidate         |
+| `healthy/control`         | Deployment that stays up                                       | never a candidate         |
 
-For speed, the dev ReaperConfig uses `crashLoopDuration: 5m`,
-`minRestarts: 3`, `cronJobs.failingDuration: 10m` and `cronJobs.minFailedRuns:
-3` (the lowest values validation allows).
+For speed, the dev ReaperConfig uses `crashLoopDuration: 5m` and
+`cronJobs.failingDuration: 10m`, the lowest durations validation allows.
+`minRestarts: 3` and `cronJobs.minFailedRuns: 3` are above their minimum of 1,
+so a single restart or failed run is not enough. `scope.includeNamespaces`
+lists only the fixture namespaces, so a shared dev cluster is left alone.
 
 ## 2. Report mode (US1)
 

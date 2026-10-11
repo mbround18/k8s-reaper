@@ -30,4 +30,4 @@ options:
           - server:*
   kubeconfig:
     updateDefaultKubeconfig: true
-    switchCurrentContext: true
+    switchCurrentContext: false # dev commands pass --context; never change the current one

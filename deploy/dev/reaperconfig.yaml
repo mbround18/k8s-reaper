@@ -13,7 +13,9 @@ spec:
     recoveryWindow: 1m # 1m–1d (minimum)
   scope:
     excludeNamespaces: [kube-system, kube-public, kube-node-lease, flux-system]
-    includeNamespaces: []
+    # Only the fixture namespaces, so the reaper leaves everything else alone
+    # when the dev cluster is shared (make dev-kind).
+    includeNamespaces: [plain, kustomize, helm, partial, ds, job, optout, sts, imagepull, healthy, cron]
   limits:
     maxReapsPerCycle: 1 # quickstart §3 relies on one reap per cycle
     maxReaped: 5

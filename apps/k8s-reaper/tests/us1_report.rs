@@ -8,6 +8,8 @@
 //! Needs the dev fixtures (`deploy/dev/fixtures/`) and the reaper running in
 //! report mode with the dev ReaperConfig. Reads only; it changes nothing.
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment};
@@ -36,9 +38,7 @@ async fn deployment(client: &Client, ns: &str, name: &str) -> Deployment {
 #[tokio::test]
 #[ignore = "needs the k3d dev cluster with the reaper running (make dev-cluster dev-run)"]
 async fn report_mode_publishes_plans_and_changes_nothing() {
-    let client = Client::try_default()
-        .await
-        .expect("kubeconfig for the dev cluster");
+    let client = common::dev_client().await;
 
     let replicas_before = deployment(&client, "plain", "crashloop")
         .await

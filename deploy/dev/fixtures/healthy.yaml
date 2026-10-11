@@ -1,0 +1,25 @@
+# healthy/control: a Deployment that stays up.
+# Expect: never a candidate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control
+  namespace: healthy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: control
+  template:
+    metadata:
+      labels:
+        app: control
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: busybox:1.36.1
+          command: ["sleep", "2147483647"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 16Mi }

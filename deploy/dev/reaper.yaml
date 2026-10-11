@@ -1,0 +1,121 @@
+# The reaper in the dev cluster (`make dev-run`): RBAC per
+# specs/001-crashloop-reaper/contracts/config.md, report mode from the dev
+# ReaperConfig. The image comes from `make image dev-load` (never pulled).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-reaper
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-reaper
+  namespace: k8s-reaper
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-reaper
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [apps]
+    resources: [deployments/scale, statefulsets/scale]
+    verbs: [get, patch, update]
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [keda.sh]
+    resources: [scaledobjects]
+    verbs: [get, list, watch]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [reaper.boop.ninja]
+    resources: [reaperconfigs]
+    verbs: [get, list, watch]
+  - apiGroups: [reaper.boop.ninja]
+    resources: [reaperconfigs/status]
+    verbs: [get, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-reaper
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-reaper
+subjects:
+  - kind: ServiceAccount
+    name: k8s-reaper
+    namespace: k8s-reaper
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-reaper
+  namespace: k8s-reaper
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-reaper
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k8s-reaper
+    spec:
+      serviceAccountName: k8s-reaper
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: k8s-reaper
+          image: k8s-reaper:dev
+          imagePullPolicy: Never
+          env:
+            - name: REAPER_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+          ports:
+            - { name: http, containerPort: 8080 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - name: notifications
+              mountPath: /etc/k8s-reaper/notifications
+              readOnly: true
+      volumes:
+        # Channel URLs (deploy/dev/notify/secret.yaml); none means no notifications.
+        - name: notifications
+          secret:
+            secretName: k8s-reaper-notifications
+            optional: true

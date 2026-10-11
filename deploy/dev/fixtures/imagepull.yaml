@@ -1,0 +1,24 @@
+# imagepull/missing: a Deployment whose image cannot be pulled.
+# Expect: never a candidate (ImagePullBackOff is not a crash loop).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: missing
+  namespace: imagepull
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: missing
+  template:
+    metadata:
+      labels:
+        app: missing
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: registry.example.test/k8s-reaper/missing:0.0.0
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 16Mi }

@@ -10,6 +10,8 @@
 //! Reads only. Not covered here: deleting the Secret stops messages without a
 //! restart (check by hand: `reaper_notification_channels` empties).
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -86,9 +88,7 @@ async fn is_candidate(client: &Client) -> bool {
 #[tokio::test]
 #[ignore = "needs the k3d dev cluster with the reaper and deploy/dev/notify (make dev-run dev-notify)"]
 async fn report_mode_candidates_are_notified_once() {
-    let client = Client::try_default()
-        .await
-        .expect("kubeconfig for the dev cluster");
+    let client = common::dev_client().await;
 
     // Scenario 3 and SC-009: the mail arrives within a minute of the
     // transition (measured from when this test first sees the candidate).

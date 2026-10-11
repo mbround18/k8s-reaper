@@ -1,0 +1,26 @@
+# sts/crashloop: crash-looping StatefulSet.
+# Expect: candidate, then reaped (scaled to 0) in full mode.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: crashloop
+  namespace: sts
+spec:
+  replicas: 1
+  serviceName: crashloop # no Service needed; the field is required
+  selector:
+    matchLabels:
+      app: crashloop
+  template:
+    metadata:
+      labels:
+        app: crashloop
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: busybox:1.36.1
+          command: ["false"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 16Mi }

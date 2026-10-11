@@ -242,11 +242,11 @@ with the owner's agreement and saying so in the commit.
 
 ### Dev setup and quickstart
 
-- [ ] G01 Run `make dev-cluster` end to end once; confirm the pinned versions exist and work together (Flux `v2.7.0`, `rancher/k3s:v1.36.5-k3s1`, `busybox:1.36.1`) and fix what does not
-- [ ] G02 Add the missing `deploy/dev/reaper.yaml` (namespace `k8s-reaper`, ServiceAccount, ClusterRole/Binding per contracts/config.md, Deployment with downward-API `REAPER_NAMESPACE`) so `make dev-run` works; note in `deploy/dev/README.md` that `helm` is now required on the host
-- [ ] G03 quickstart §1 says the dev values are "the lowest values validation allows", but `MIN_RESTARTS_RANGE` and `minFailedRuns` start at 1. Fix the sentence (or the ranges, if the owner prefers 3)
-- [ ] G04 Add the quickstart fixtures that are missing from `deploy/dev/fixtures/`: a crash-looping StatefulSet, an `ImagePullBackOff` Deployment (must not be a candidate) and a healthy control Deployment
-- [ ] G05 Make sure the CRD is applied before `make dev-cluster` waits on the dev ReaperConfig
+- [X] G01 Run `make dev-cluster` end to end once; confirm the pinned versions exist and work together (Flux `v2.7.0`, `rancher/k3s:v1.36.5-k3s1`, `busybox:1.36.1`) and fix what does not. Done on an existing kind cluster instead (`make dev-kind`, k8s 1.32, Flux source-controller v1.9.5): fixtures, registry and both Flux sources work. The pins exist; the k3d path itself (`k3d cluster create`, `flux install --version=v2.7.0`) has not run. Every dev target and test now names its context (`KUBE_CONTEXT`, `REAPER_TEST_CONTEXT`) and refuses anything but `kind-*`/`k3d-*` on loopback
+- [X] G02 Add the missing `deploy/dev/reaper.yaml` (namespace `k8s-reaper`, ServiceAccount, ClusterRole/Binding per contracts/config.md, Deployment with downward-API `REAPER_NAMESPACE`) so `make dev-run` works; note in `deploy/dev/README.md` that `helm` is now required on the host
+- [X] G03 quickstart §1 says the dev values are "the lowest values validation allows", but `MIN_RESTARTS_RANGE` and `minFailedRuns` start at 1. Fix the sentence (or the ranges, if the owner prefers 3)
+- [X] G04 Add the quickstart fixtures that are missing from `deploy/dev/fixtures/`: a crash-looping StatefulSet, an `ImagePullBackOff` Deployment (must not be a candidate) and a healthy control Deployment (plus `cron/failing`, listed in quickstart §1 but missing)
+- [X] G05 Make sure the CRD is applied before `make dev-cluster` waits on the dev ReaperConfig
 
 ### Kubernetes adapter
 

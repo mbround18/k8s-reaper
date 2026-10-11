@@ -33,3 +33,23 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: optout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sts
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: imagepull
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: healthy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cron

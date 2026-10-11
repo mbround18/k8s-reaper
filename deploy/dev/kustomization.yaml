@@ -12,4 +12,8 @@ resources:
   - fixtures/ds.yaml
   - fixtures/job.yaml
   - fixtures/optout.yaml
+  - fixtures/sts.yaml
+  - fixtures/imagepull.yaml
+  - fixtures/healthy.yaml
+  - fixtures/cron.yaml
   - flux/sources.yaml
