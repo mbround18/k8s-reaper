@@ -1,0 +1,33 @@
+# Local dev cluster for k8s-reaper: one server, one agent, and a registry for
+# the Flux OCI sources (deploy/dev/flux). `make dev-cluster` uses this file.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: k8s-reaper-dev # must match CLUSTER in the Makefile
+servers: 1
+agents: 1
+# Same k3s minor as roanoke (research.md R1). Docker tags use '-' for '+'.
+image: rancher/k3s:v1.36.5-k3s1
+registries:
+  create:
+    # Reached as localhost:5001 from the host (flux/helm push) and as
+    # k3d-reaper-registry:5000 from inside the cluster (OCIRepository urls).
+    name: k3d-reaper-registry
+    host: 127.0.0.1
+    hostPort: "5001"
+options:
+  k3d:
+    wait: true
+    timeout: 120s
+  k3s:
+    extraArgs:
+      # Not needed for the fixtures; keeps the dev cluster small.
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+      - arg: --disable=metrics-server
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

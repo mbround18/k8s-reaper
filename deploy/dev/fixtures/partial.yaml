@@ -1,0 +1,31 @@
+# partial/rollout: starts healthy (2 pods). `make dev-cluster` then applies
+# partial-break.yaml, so a new ReplicaSet crash-loops while the old one keeps
+# 2 available pods (maxUnavailable: 0). Expect: PartiallyAvailable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollout
+  namespace: partial
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: rollout
+  template:
+    metadata:
+      labels:
+        app: rollout
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: busybox:1.36.1
+          command: ["sleep", "2147483647"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 16Mi }

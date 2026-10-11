@@ -1,0 +1,24 @@
+# ds/crashloop: crash-looping DaemonSet.
+# Expect: candidate with ReapSkipped reason=CannotScaleToZero.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: crashloop
+  namespace: ds
+spec:
+  selector:
+    matchLabels:
+      app: crashloop
+  template:
+    metadata:
+      labels:
+        app: crashloop
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: busybox:1.36.1
+          command: ["false"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 16Mi }

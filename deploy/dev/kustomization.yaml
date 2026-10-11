@@ -1,0 +1,15 @@
+# `kubectl apply -k deploy/dev` (run by `make dev-cluster`). Needs the
+# ReaperConfig CRD and Flux installed first. Not listed here on purpose:
+# fixtures/partial-break.yaml (a patch applied afterwards) and the Flux
+# payloads under flux/kustomize and flux/charts (pushed as OCI artifacts).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - reaperconfig.yaml
+  - fixtures/plain.yaml
+  - fixtures/partial.yaml
+  - fixtures/ds.yaml
+  - fixtures/job.yaml
+  - fixtures/optout.yaml
+  - flux/sources.yaml

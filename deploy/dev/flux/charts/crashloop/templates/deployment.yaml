@@ -1,0 +1,27 @@
+# helm/crashloop: rendered by the Flux HelmRelease helm/crashloop, which adds
+# the helm.toolkit.fluxcd.io/{name,namespace} labels.
+# Expect: candidate, then reaped in full mode with the HelmRelease suspended.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: {{ .Values.image }}
+          command: {{ toJson .Values.command }}
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 16Mi }

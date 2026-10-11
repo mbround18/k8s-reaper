@@ -1,0 +1,27 @@
+# optout/crashloop: crash-looping Deployment opted out with the mode label.
+# Expect: untouched (no reaper labels, annotations or events).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop
+  namespace: optout
+  labels:
+    reaper.boop.ninja/mode: "off" # quoted: bare off is a YAML 1.1 boolean
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: crashloop
+  template:
+    metadata:
+      labels:
+        app: crashloop
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: app
+          image: busybox:1.36.1
+          command: ["false"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 16Mi }

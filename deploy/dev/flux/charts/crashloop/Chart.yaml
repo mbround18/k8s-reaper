@@ -1,0 +1,6 @@
+apiVersion: v2
+name: crashloop
+description: Dev fixture for k8s-reaper, a crash-looping Deployment (helm/crashloop).
+type: application
+version: 0.1.0
+appVersion: "1.36.1"

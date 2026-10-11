@@ -1,0 +1,35 @@
+# One namespace per fixture (quickstart §1), named after its prefix.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: plain
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kustomize
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: helm
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: partial
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ds
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: job
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: optout

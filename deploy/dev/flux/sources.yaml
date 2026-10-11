@@ -1,0 +1,64 @@
+# Flux objects for the kustomize/ and helm/ fixtures. Their payloads
+# (flux/kustomize, flux/charts/crashloop) are pushed to the k3d registry by
+# `make dev-push`; in-cluster the registry is k3d-reaper-registry:5000 (plain HTTP).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: dev-kustomize
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: oci://k3d-reaper-registry:5000/dev/kustomize
+  insecure: true
+  ref:
+    tag: latest
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: dev-kustomize # quickstart §3 forces reconciles on this name
+  namespace: flux-system
+spec:
+  interval: 1m
+  sourceRef:
+    kind: OCIRepository
+    name: dev-kustomize
+  path: ./
+  prune: true
+  targetNamespace: kustomize
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: crashloop-chart
+  namespace: helm
+spec:
+  interval: 1m
+  url: oci://k3d-reaper-registry:5000/charts/crashloop
+  insecure: true
+  ref:
+    tag: 0.1.0
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: crashloop
+  namespace: helm
+spec:
+  interval: 1m
+  chartRef:
+    kind: OCIRepository
+    name: crashloop-chart
+  # The release never becomes Ready (the pods crash-loop); do not wait for it
+  # or remediate, so Flux leaves the crash-looping Deployment in place.
+  install:
+    disableWait: true
+    remediation:
+      retries: 0
+  upgrade:
+    disableWait: true
+    remediation:
+      retries: 0
