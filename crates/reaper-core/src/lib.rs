@@ -8,6 +8,7 @@ pub mod decide;
 pub mod detect;
 pub mod executor;
 pub mod glob;
+pub mod hold;
 pub mod model;
 pub mod notify;
 pub mod plan;
