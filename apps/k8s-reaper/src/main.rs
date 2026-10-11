@@ -1,3 +1,15 @@
+//! The `k8s-reaper` binary: finds workloads stuck crash-looping and reports
+//! or reaps them.
+//!
+//! A thin execution layer over the hexagon. It holds no decision logic: it
+//! parses the process flags (`RunArgs`, per `contracts/config.md`), then
+//! either prints the ReaperConfig CRD (`k8s-reaper crd`, from
+//! `reaper_kube::crd::crd_yaml`) or runs the reaper (`k8s-reaper run`, the
+//! default). `run::main` wires the adapters (`reaper-kube`, `reaper-flux`,
+//! `reaper-observability`, `reaper-notify`) to `reaper-core` and loops:
+//! snapshot, read config, `decide`, `execute`, notify, record metrics and
+//! status, then wait for the next tick or a watched change.
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
