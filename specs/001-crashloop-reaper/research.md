@@ -206,7 +206,10 @@ checked read-only on 2026-10-10.
   - `kube` + `k8s-openapi` (feature `v1_36`, or the newest feature the
     published crate offers), using `rustls` with no OpenSSL.
   - Multi-stage Dockerfile: `lukemathwalker/cargo-chef` planner → cook →
-    builder, then `gcr.io/distroless/cc-debian12:nonroot`.
+    builder, then `gcr.io/distroless/cc-debian13:nonroot`. The runtime's
+    Debian release must match the builder's (cargo-chef is on Debian 13), or
+    the binary needs a newer glibc than the image has. The image runs as
+    `USER 65532:65532`, numeric so `runAsNonRoot` can verify it.
   - Makefile `gc` per the constitution.
 - **Rationale**: house rules. With rustls the runtime image needs no libssl.
 - **Alternatives**: musl static + `scratch`. A valid later optimisation, but

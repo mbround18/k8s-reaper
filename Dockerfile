@@ -17,8 +17,10 @@ COPY . .
 RUN cargo build --release --locked -p k8s-reaper \
  && cp target/release/k8s-reaper /k8s-reaper
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+# Same Debian release as the cargo-chef builder (13), so glibc matches.
+FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=builder /k8s-reaper /k8s-reaper
-USER nonroot
+# Numeric, so runAsNonRoot can verify it (distroless nonroot is 65532).
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/k8s-reaper"]
