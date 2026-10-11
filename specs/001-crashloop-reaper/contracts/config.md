@@ -44,9 +44,21 @@ status:
   conditions:
     - type: Valid              # False with message listing field errors
       status: "True"
-    - type: Ready              # caches synced and a cycle completed in the last 3 intervals
-      status: "True"
+    - type: Ready
+      status: "True"           # False when not ready
+      reason: CycleCompleted   # or Stalled | CachesNotSynced
 ```
+
+| `Ready` reason    | status  | When                                                     |
+| ----------------- | ------- | -------------------------------------------------------- |
+| `CachesNotSynced` | `False` | from start until the first cycle finishes                |
+| `Stalled`         | `False` | the last cycle finished more than `3 × cycleInterval` ago |
+| `CycleCompleted`  | `True`  | otherwise                                                |
+
+`Ready` follows the readiness probe except for config: an invalid config shows
+on `Valid`, not on `Ready`. `NotReady` is not written. A status task re-writes
+only the conditions every `cycleInterval`, so `Stalled` appears while the loop
+is stuck.
 
 Durations use the Go/Flux form (`90s`, `30m`, `1h30m`). Ranges and defaults are
 in [data-model.md](../data-model.md#validation-rules-config). The YAML above is
@@ -102,11 +114,20 @@ OTel SDK environment; the reaper adds no flags of its own.
 
 ## HTTP
 
-| Path       | 200 when                                                            |
-| ---------- | ------------------------------------------------------------------- |
-| `/healthz` | the process is up and the cycle loop has not panicked               |
-| `/readyz`  | caches synced, a valid config is active, last cycle < 3× interval   |
-| `/metrics` | always (Prometheus text)                                            |
+| Path       | 200 when                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------ |
+| `/healthz` | a cycle has started within `max(10 × cycleInterval, 10m)`. A loop that ends or panics exits the process |
+| `/readyz`  | caches synced, **a valid config applied at least once since start** (built-in defaults count), and the last cycle finished within `3 × cycleInterval` |
+| `/metrics` | always (Prometheus text)                                                                         |
+
+Both probe endpoints return 503 with a one-line plain-text reason
+(`no cycle started in 10m0s`, `caches not synced yet`,
+`no valid config applied yet`, `no cycle finished yet`,
+`last cycle finished 4m12s ago`) so `kubectl describe pod` shows why.
+
+At defaults (`cycleInterval: 60s`, kubelet `periodSeconds: 10`,
+`failureThreshold: 3`), a hung loop is unready after 3 min and restarted after
+about 10.5 min (SC-001: ≤ 12 min).
 
 ## RBAC required (ClusterRole)
 

@@ -299,18 +299,31 @@ The pod is running but not `Ready`, or `ReaperStalled` fires.
 
 **Causes and fixes:**
 
-- **It is still starting.** The reaper is ready only after its watch caches
-  have synced and the first cycle has finished. On a large cluster this takes
-  a little while. The log shows `waiting for caches to sync`, then
+The `503` body says which case it is; `kubectl -n k8s-reaper describe pod`
+shows it in the `Readiness probe failed` event. The `ReaperConfig`'s `Ready`
+condition gives the same answer as a reason.
+
+**Causes and fixes:**
+
+- **It is still starting** (`caches not synced yet`, `no cycle finished yet`;
+  `Ready` reason `CachesNotSynced`). The reaper is ready only after its watch
+  caches have synced and the first cycle has finished. On a large cluster this
+  takes a little while. The log shows `waiting for caches to sync`, then
   `caches synced`.
 - **The caches never sync.** Repeated `watch error; retrying with backoff`
   lines. Usually RBAC; see [the next entry](#forbidden-in-the-logs).
-- **Cycles stopped finishing.** Ready also needs the last cycle to have
-  finished within 3 × `cycleInterval`. A cycle stuck on a slow API server
-  makes it unready. Restart the pod; it resumes from what is written on the
-  objects.
-
-An invalid ReaperConfig does **not** make it unready.
+- **The config has never been valid** (`no valid config applied yet`). The
+  pod started with an invalid `ReaperConfig`. Fix it (see
+  [The ReaperConfig is invalid](#the-reaperconfig-is-invalid)); the reaper is
+  ready within a cycle. An invalid edit to a config that was valid before
+  does **not** make it unready.
+- **Cycles stopped finishing** (`last cycle finished 4m12s ago`; `Ready`
+  reason `Stalled`). Ready needs the last cycle to have finished within
+  3 × `cycleInterval`. A cycle stuck on a slow API server makes it unready.
+  If no new cycle starts within `max(10 × cycleInterval, 10m)`, `/healthz`
+  fails too and the kubelet restarts the pod, which resumes from what is
+  written on the objects. You can restart it sooner with
+  `kubectl -n k8s-reaper rollout restart deploy/k8s-reaper`.
 
 ### `Forbidden` in the logs
 

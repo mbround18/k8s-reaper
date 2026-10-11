@@ -25,17 +25,47 @@ The reaper serves three paths on `0.0.0.0:8080` (`--http-addr` /
 
 | Path       | `200` when | `503` when |
 | ---------- | ---------- | ---------- |
-| `/healthz` | The process is up and serving HTTP. | Never in practice. |
-| `/readyz`  | At least one cycle has finished, and the last one finished less than 3 × `cycleInterval` ago (3 minutes with the default `60s`). | Before the first cycle, which waits for the watch caches to sync, or when cycles have stopped finishing. |
+| `/healthz` | A cycle has started within `max(10 × cycleInterval, 10m)` (10 minutes with the default `60s`). | No cycle has started for that long: the loop is stuck. |
+| `/readyz`  | The watch caches have synced, a valid config has been applied at least once since the pod started (the built-in defaults count), and the last cycle finished less than 3 × `cycleInterval` ago (3 minutes with the default `60s`). | Before the first cycle, while the config has never been valid, or when cycles have stopped finishing. |
 | `/metrics` | Always. Prometheus text format (OpenMetrics). | |
 
-The chart wires `/healthz` to the liveness probe and `/readyz` to the
-readiness probe.
+A `503` comes with a one-line reason, which `kubectl describe pod` shows in
+the probe's failure event:
 
-An invalid `ReaperConfig` does not make `/readyz` fail: the reaper keeps
-running on the last valid config. A stuck cycle loop does not make `/healthz`
-fail either, so the liveness probe will not restart it. Watch for it with the
-`ReaperStalled` alert instead.
+| Reason | Probe | Meaning |
+| ------ | ----- | ------- |
+| `no cycle started in 10m0s` | `/healthz` | The cycle loop is stuck. The kubelet restarts the container. |
+| `caches not synced yet` | `/readyz` | Still starting: the watch caches have not finished their first list. |
+| `no valid config applied yet` | `/readyz` | The `ReaperConfig` has been invalid since the pod started. |
+| `no cycle finished yet` | `/readyz` | The first cycle is still running. |
+| `last cycle finished 4m12s ago` | `/readyz` | Cycles have stopped finishing. |
+
+The chart wires `/healthz` to the liveness probe and `/readyz` to the
+readiness probe. With the defaults (`cycleInterval: 60s`, probe period `10s`,
+3 failures), a hung loop is unready after 3 minutes and restarted after about
+10.5 minutes. A loop that ends or panics exits the process, so it restarts at
+once.
+
+An invalid edit to a `ReaperConfig` that was valid before does not make
+`/readyz` fail: the reaper keeps running on the last valid config, and the
+`Valid` condition says what is wrong.
+
+The same answer is on the `ReaperConfig` as its `Ready` condition:
+
+| `Ready` reason | Status | When |
+| -------------- | ------ | ---- |
+| `CachesNotSynced` | `False` | From start until the first cycle finishes. |
+| `Stalled` | `False` | The last cycle finished more than 3 × `cycleInterval` ago. |
+| `CycleCompleted` | `True` | Otherwise. |
+
+`Ready` is about the cycle loop only; config problems show on `Valid`. It is
+updated every `cycleInterval` even while the loop is stuck, so `Stalled` shows
+up without a restart:
+
+```sh
+kubectl get reaperconfig default \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}{"\n"}{end}'
+```
 
 If `/readyz` stays at `503`, see
 [troubleshooting.md](troubleshooting.md#readyz-returns-503).
@@ -345,7 +375,9 @@ freshly started reaper never gets its watch caches synced.
    kubectl -n k8s-reaper rollout restart deploy/k8s-reaper
    ```
 
-The liveness probe does not catch this case, so a restart is manual.
+If no cycle has started for `max(10 × cycleInterval, 10m)` either, the
+liveness probe restarts the pod by itself. A cycle that started but never
+finishes keeps the reaper unready (`Ready` reason `Stalled`) until then.
 
 ### ReaperConfigInvalid
 

@@ -43,40 +43,40 @@ The `Ready` condition says `Stalled` or `CachesNotSynced` when that is the case.
 
 ### Tests first
 
-- [ ] T120 [P] [US1] Unit tests in `crates/reaper-observability/src/http.rs`, with injected `Instant`s and `I = 60s` and `15s`:
+- [X] T120 [P] [US1] Unit tests in `crates/reaper-observability/src/http.rs`, with injected `Instant`s and `I = 60s` and `15s`:
   - `live(now)` is true until `now - cycle_started ≥ max(10·I, 10m)`, then false (FR-002);
   - `ready(now)` needs `caches_synced ∧ config_applied ∧ cycle_finished ≠ none ∧ now - cycle_finished < 3·I` (FR-003);
   - `config_applied` latches: there is no API to clear it;
   - `readiness(now)` is `CachesNotSynced` before the first finished cycle, `Stalled` at `≥ 3·I`, otherwise `CycleCompleted`;
   - for every `I`, liveness fails strictly after readiness;
   - `/healthz` and `/readyz` return 503 with the one-line reasons in contracts/config.md (`no cycle started in …`, `no valid config applied yet`, `last cycle finished … ago`), using `tower::ServiceExt::oneshot`.
-- [ ] T121 [P] [US1] Unit tests in `crates/reaper-kube/src/config_watch.rs` (`status(...)`): `Readiness::CycleCompleted` → `Ready=True/CycleCompleted`; `Stalled` → `False/Stalled`; `CachesNotSynced` → `False/CachesNotSynced`. Assert that `NotReady` is never written. Update `crates/reaper-kube/tests/config_watch.rs` to match.
-- [ ] T122 [P] [US1] Write a test that pins FR-001 in `apps/k8s-reaper/src/main.rs` or `run.rs` tests: the error from `run` propagates out of `main`, so it exits non-zero. Keep `block_on(run(args))` and do not swallow the error.
+- [X] T121 [P] [US1] Unit tests in `crates/reaper-kube/src/config_watch.rs` (`status(...)`): `Readiness::CycleCompleted` → `Ready=True/CycleCompleted`; `Stalled` → `False/Stalled`; `CachesNotSynced` → `False/CachesNotSynced`. Assert that `NotReady` is never written. Update `crates/reaper-kube/tests/config_watch.rs` to match.
+- [X] T122 [P] [US1] Write a test that pins FR-001 in `apps/k8s-reaper/src/main.rs` or `run.rs` tests: the error from `run` propagates out of `main`, so it exits non-zero. Keep `block_on(run(args))` and do not swallow the error.
 
 ### Implementation
 
-- [ ] T123 [US1] Rework `Health` in `crates/reaper-observability/src/http.rs` per data-model.md "Health":
+- [X] T123 [US1] Rework `Health` in `crates/reaper-observability/src/http.rs` per data-model.md "Health":
   - fields `cycle_started` (initially the process start), `cycle_finished: Option<Instant>`, `config_applied` (latching), `caches_synced`;
   - remove `alive`, `set_alive`, `set_ready`;
   - methods `cycle_started(now)`, `cycle_finished(now, interval)`, `config_applied()`, `caches_synced()`, `live_at(now)`, `ready_at(now)`, `readiness_at(now) -> Readiness`;
   - the interval used by `live_at` is the one passed with the last `cycle_started` or `cycle_finished` call (store it).
   - Put `Readiness` in `reaper-observability`, and have `reaper-kube` map it to the condition. If that would add a crate dependency edge that does not exist today, define `Readiness` in `reaper-core::ports` instead (it is plain data).
-- [ ] T124 [US1] In `crates/reaper-kube/src/config_watch.rs`, change `status(...)` and `write_status(...)` to take `Readiness` instead of `ready: bool`. Add `write_ready(readiness)`, which re-writes the last written status with only `Ready` changed and is a no-op when the reason has not changed. Keep the last written status in the `ConfigWatch` behind an `Arc<Mutex<…>>`, so a clone can be handed to another task.
-- [ ] T125 [US1] Wire it in `apps/k8s-reaper/src/run.rs`:
+- [X] T124 [US1] In `crates/reaper-kube/src/config_watch.rs`, change `status(...)` and `write_status(...)` to take `Readiness` instead of `ready: bool`. Add `write_ready(readiness)`, which re-writes the last written status with only `Ready` changed and is a no-op when the reason has not changed. Keep the last written status in the `ConfigWatch` behind an `Arc<Mutex<…>>`, so a clone can be handed to another task.
+- [X] T125 [US1] Wire it in `apps/k8s-reaper/src/run.rs`:
   - call `health.caches_synced()` after the reflectors' initial sync;
   - call `health.cycle_started(Instant::now(), interval)` at the top of each loop iteration;
   - in `refresh_config`, call `health.config_applied()` when a valid config, or the built-in defaults with no object, is in force;
   - drop `health.set_ready(true)`;
   - pass `health.readiness_at(Instant::now())` to `write_status`.
-- [ ] T126 [US1] Add the status task in `apps/k8s-reaper/src/run.rs`. It is a `tokio::spawn`ed loop that every `cycleInterval` (read from a `watch` channel the loop updates) calls `configs.write_ready(health.readiness_at(now))`. Errors are logged at `warn`, and the task never exits the process. It must not share a lock with the cycle loop beyond `Health`'s atomics and the status mutex.
-- [ ] T127 [US1] Add the debug-only hang hook `apps/k8s-reaper/src/dev_hang.rs`. Behind `#[cfg(debug_assertions)]`, `REAPER_DEV_HANG_AFTER=<n>` makes cycle `n+1` await forever (`std::future::pending`). It is absent from release builds; add a `cfg` test that the module is not compiled in release.
-- [ ] T128 [US1] Write the integration test `apps/k8s-reaper/tests/us7_health.rs` (`#[ignore]`, uses `common::dev_client`), covering quickstart §1 steps 1–3:
+- [X] T126 [US1] Add the status task in `apps/k8s-reaper/src/run.rs`. It is a `tokio::spawn`ed loop that every `cycleInterval` (read from a `watch` channel the loop updates) calls `configs.write_ready(health.readiness_at(now))`. Errors are logged at `warn`, and the task never exits the process. It must not share a lock with the cycle loop beyond `Health`'s atomics and the status mutex.
+- [X] T127 [US1] Add the debug-only hang hook `apps/k8s-reaper/src/dev_hang.rs`. Behind `#[cfg(debug_assertions)]`, `REAPER_DEV_HANG_AFTER=<n>` makes cycle `n+1` await forever (`std::future::pending`). It is absent from release builds; add a `cfg` test that the module is not compiled in release.
+- [X] T128 [US1] Write the integration test `apps/k8s-reaper/tests/us7_health.rs` (`#[ignore]`, uses `common::dev_client`), covering quickstart §1 steps 1–3:
   - an invalid config at start gives 503 and `CachesNotSynced`, then it becomes ready once fixed;
   - an invalid edit while running stays ready;
   - with the hang hook, `Stalled` appears within 3·I, and `restartCount` goes up within 12 min.
 
   Step 3 needs a debug image. Add `make image-debug` to `Makefile` (a `--build-arg PROFILE=dev` on the existing Dockerfile builder stage) only if the Dockerfile can take it without a new stage. Otherwise the test is skipped with a message saying how to build one.
-- [ ] T129 [US1] Docs (FR-020):
+- [X] T129 [US1] Docs (FR-020):
   - in `docs/guides/monitoring.md` and `docs/guides/troubleshooting.md`, the probes and the `Ready` reasons;
   - apply contracts/config.md HTTP and `status.conditions` to `specs/001-crashloop-reaper/contracts/config.md`.
 
