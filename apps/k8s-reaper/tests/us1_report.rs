@@ -65,8 +65,10 @@ async fn report_mode_publishes_plans_and_changes_nothing() {
         p.get("skip").is_none(),
         "plain/crashloop should be reapable: {p}"
     );
+    // contracts/annotations.md: a reapable plan is `{"actions": [...]}`; only
+    // a skipped one carries `would`.
     assert!(
-        p["would"].as_array().is_some_and(|w| !w.is_empty()),
+        p["actions"].as_array().is_some_and(|a| !a.is_empty()),
         "plan lists what full mode would do: {p}"
     );
 
