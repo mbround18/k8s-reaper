@@ -11,9 +11,6 @@ permissions:
 
 jobs:
   test:
-    # Dependency bot PRs skip CI; the push to main after merging still runs it.
-    # A skipped job counts as passing for the required checks.
-    if: github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,6 +24,8 @@ jobs:
       - run: cargo test --workspace --locked
 
   image:
+    # Dependency bot PRs skip the image build; the push to main after merging
+    # still runs it. A skipped job counts as passing for the required checks.
     if: github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
     runs-on: ubuntu-latest
     steps:
