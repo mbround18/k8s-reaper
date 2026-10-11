@@ -13,12 +13,9 @@ read what it finds, and then switches it to full mode.
 
 ## 1. Install with Flux
 
-> The Helm chart is not published yet. It will live in
-> [mbround18/helm-charts](https://github.com/mbround18/helm-charts) under
-> `charts/k8s-reaper`. The manifests below show the planned shape. Chart
-> values are subject to the chart.
-
-Point Flux at the chart repository with a `GitRepository`:
+The Helm chart lives in
+[mbround18/helm-charts](https://github.com/mbround18/helm-charts) under
+`charts/k8s-reaper`. Point Flux at the chart repository with a `GitRepository`:
 
 ```yaml
 apiVersion: source.toolkit.fluxcd.io/v1
@@ -60,10 +57,21 @@ spec:
     crds: CreateReplace
   upgrade:
     crds: CreateReplace
-  # Planned: the chart creates ReaperConfig/default in report mode.
-  # See configuration.md for the fields, and notifications.md for
-  # notifications.secretName.
-  values: {}
+  values:
+    # ReaperConfig/default. See configuration.md for the fields.
+    reaperConfig:
+      spec:
+        mode: report
+    # Both are off by default. The labels are whatever your Prometheus
+    # selects on, here kube-prometheus-stack's.
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: kube-prometheus-stack
+    prometheusRule:
+      enabled: true
+      labels:
+        release: kube-prometheus-stack
 ```
 
 Commit both files to your Flux repository and let Flux apply them.
@@ -72,7 +80,8 @@ The chart installs:
 
 - the `ReaperConfig` CRD;
 - the reaper Deployment (one replica) and its RBAC;
-- a Service, a ServiceMonitor and a PrometheusRule with the alerts;
+- a metrics Service, plus the ServiceMonitor and the PrometheusRule with the
+  alerts when they are enabled;
 - `ReaperConfig/default` with `mode: report`.
 
 The reaper never acts on its own namespace. By default it also skips
@@ -241,8 +250,8 @@ kubectl get reaperconfig default -o jsonpath='{.status}' ; echo
 ### 4.5 Metrics and alerts
 
 The reaper serves Prometheus metrics on port `8080` at `/metrics`. The chart's
-ServiceMonitor scrapes them. To look by hand (the Deployment name depends on
-the chart):
+ServiceMonitor scrapes them (`serviceMonitor.enabled: true`). To look by hand
+(the Deployment is named after the release, here `k8s-reaper`):
 
 ```sh
 kubectl -n k8s-reaper port-forward deploy/k8s-reaper 8080:8080
@@ -306,8 +315,9 @@ When the reports match what you expect, set `mode: full`:
 kubectl patch reaperconfig default --type merge -p '{"spec":{"mode":"full"}}'
 ```
 
-If the chart manages `ReaperConfig/default`, make the same change in the
-HelmRelease values in Git instead, or Flux will put `report` back.
+If the chart manages `ReaperConfig/default`, set
+`reaperConfig.spec.mode: full` in the HelmRelease values in Git instead, or
+Flux will put `report` back.
 
 The change takes effect on the next cycle, with no restart. Check it:
 

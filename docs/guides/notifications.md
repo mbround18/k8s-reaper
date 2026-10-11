@@ -220,12 +220,11 @@ Delivery:
 
 ## Helm chart
 
-> The chart is not published yet. These are the planned values.
-
 ```yaml
 notifications:
   # Name of the Secret holding channel URLs. The chart only mounts it
   # (optional: true); create it yourself or with your secrets tooling.
+  # "" drops the mount, and with it notifications.
   secretName: k8s-reaper-notifications
   mountPath: /etc/k8s-reaper/notifications
 ```

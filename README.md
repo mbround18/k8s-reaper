@@ -16,7 +16,9 @@ stops restarting every five minutes forever and a human gets told.
 
 All six user stories are built and pass on a dev cluster: report, reap with
 Flux held off, one-step restore, runtime config, CronJobs, and notifications.
-The Helm chart is not published yet. The design lives in
+The Helm chart is in review in
+[mbround18/helm-charts#251](https://github.com/mbround18/helm-charts/pull/251).
+The design lives in
 [`specs/001-crashloop-reaper/`](specs/001-crashloop-reaper/spec.md).
 
 ## Guides
