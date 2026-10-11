@@ -62,6 +62,15 @@ thin binary)
   cache.
 - A restore request is acted on within 5 s of the annotation landing.
 
+Measured 2026-10-10 (T074):
+
+- Core cycle (`cargo bench -p reaper-core --bench decide`): 360 pods, 130
+  workloads, 30 HelmReleases in full mode; median 0.18 ms, slowest 0.3 ms of
+  200 runs. The bench fails if any cycle reaches 1 s.
+- Running reaper on the kind dev cluster (110 pods, report mode): 21 MiB
+  working set (`kubectl top`), mean cycle 9.5 ms including API calls
+  (`reaper_cycle_duration_seconds`, 109 cycles).
+
 **Constraints**:
 
 - Never mutate outside the rules in the spec (FR-011, FR-012).
