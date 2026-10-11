@@ -61,14 +61,17 @@ async fn report_mode_publishes_plans_and_changes_nothing() {
         tokio::time::sleep(POLL).await;
     };
     let p = plan(&plain).expect("candidate carries a plan");
-    assert!(
-        p.get("skip").is_none(),
-        "plain/crashloop should be reapable: {p}"
-    );
     // contracts/annotations.md: a reapable plan is `{"actions": [...]}`; only
-    // a skipped one carries `would`.
+    // a skipped one carries `would`. After earlier stories, other fixtures
+    // may have crash-looped longer and take this cycle's one reap, so
+    // `RateLimited` with the full reap under `would` is reapable too.
+    let actions = match p.get("skip").and_then(Value::as_str) {
+        None => &p["actions"],
+        Some("RateLimited") => &p["would"],
+        Some(other) => panic!("plain/crashloop should be reapable, skipped {other}: {p}"),
+    };
     assert!(
-        p["actions"].as_array().is_some_and(|a| !a.is_empty()),
+        actions.as_array().is_some_and(|a| !a.is_empty()),
         "plan lists what full mode would do: {p}"
     );
 
