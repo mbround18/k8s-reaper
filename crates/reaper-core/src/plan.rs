@@ -65,10 +65,8 @@ impl Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum SkipReason {
-    OptedOut,
     ReportOnlyScope,
     CannotScaleToZero,
-    UnsupportedOwner,
     ManagedByController,
     ManagedByAutoscaler,
     PartiallyAvailable,
@@ -78,11 +76,9 @@ pub enum SkipReason {
 
 impl SkipReason {
     /// Every variant, in declaration order (metric label sets, docs tables).
-    pub const ALL: [SkipReason; 9] = [
-        SkipReason::OptedOut,
+    pub const ALL: [SkipReason; 7] = [
         SkipReason::ReportOnlyScope,
         SkipReason::CannotScaleToZero,
-        SkipReason::UnsupportedOwner,
         SkipReason::ManagedByController,
         SkipReason::ManagedByAutoscaler,
         SkipReason::PartiallyAvailable,
@@ -95,25 +91,21 @@ impl SkipReason {
     /// position in `ALL`.
     const fn position(self) -> usize {
         match self {
-            SkipReason::OptedOut => 0,
-            SkipReason::ReportOnlyScope => 1,
-            SkipReason::CannotScaleToZero => 2,
-            SkipReason::UnsupportedOwner => 3,
-            SkipReason::ManagedByController => 4,
-            SkipReason::ManagedByAutoscaler => 5,
-            SkipReason::PartiallyAvailable => 6,
-            SkipReason::RateLimited => 7,
-            SkipReason::ReapCeilingReached => 8,
+            SkipReason::ReportOnlyScope => 0,
+            SkipReason::CannotScaleToZero => 1,
+            SkipReason::ManagedByController => 2,
+            SkipReason::ManagedByAutoscaler => 3,
+            SkipReason::PartiallyAvailable => 4,
+            SkipReason::RateLimited => 5,
+            SkipReason::ReapCeilingReached => 6,
         }
     }
 
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            SkipReason::OptedOut => "OptedOut",
             SkipReason::ReportOnlyScope => "ReportOnlyScope",
             SkipReason::CannotScaleToZero => "CannotScaleToZero",
-            SkipReason::UnsupportedOwner => "UnsupportedOwner",
             SkipReason::ManagedByController => "ManagedByController",
             SkipReason::ManagedByAutoscaler => "ManagedByAutoscaler",
             SkipReason::PartiallyAvailable => "PartiallyAvailable",

@@ -382,6 +382,9 @@ messages without a restart.
   from a fixed set (`OptedOut`, `ReportOnlyScope`, `CannotScaleToZero`,
   `UnsupportedOwner`, `ManagedByController`, `ManagedByAutoscaler`,
   `PartiallyAvailable`, `RateLimited`, `ReapCeilingReached`).
+  *Removed in 002 (FR-011): `OptedOut` and `UnsupportedOwner` were never
+  produced and are gone; a `mode=off` workload is not a candidate, and a pod
+  with an unsupported owner is counted in `reaper_unowned_crashlooping_pods`.*
 - **FR-006**: The plan MUST be a pure function of the observed objects, the
   configuration and the current time. Report mode and full mode MUST produce the
   same plan for the same inputs (dry-run equivalence).

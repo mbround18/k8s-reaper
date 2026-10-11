@@ -159,9 +159,9 @@ Two notes:
   modes, so with more candidates than `maxReapsPerCycle`, the extra ones are
   reported as `RateLimited`, exactly as full mode would treat them. In report
   mode nothing is ever reaped, so they stay that way.
-- The code also defines `OptedOut` and `UnsupportedOwner`, but this release
-  never reports them: a `mode=off` workload is ignored
-  outright, and a pod with an unsupported owner is never tracked (see
+- A `mode=off` workload never gets a skip reason: it is ignored outright.
+  A pod with an unsupported owner has no workload to skip; it is counted in
+  `reaper_unowned_crashlooping_pods` instead (see
   [above](#a-workload-i-expected-is-not-labelled)).
 
 ### It is stuck in `reaping`

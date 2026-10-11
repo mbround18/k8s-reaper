@@ -194,9 +194,9 @@ several apply, the first in this table wins:
 | `RateLimited`         | `limits.maxReapsPerCycle` was reached this cycle. |
 | `ReapCeilingReached`  | `limits.maxReaped` workloads are already reaped or being reaped. |
 
-The reason list also contains `OptedOut` and `UnsupportedOwner`. This version
-never uses them: a workload with `mode=off` is ignored entirely, and a pod
-without a supported owner has no workload to skip.
+A workload with `mode=off` has no skip reason: it is ignored entirely. A pod
+without a supported owner has no workload to skip; it is counted in
+`reaper_unowned_crashlooping_pods` instead.
 
 ## 6. Safety limits
 

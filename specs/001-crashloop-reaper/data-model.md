@@ -90,9 +90,9 @@ Action =
   | RestoreKustomizeReconcile { target: ObjectRef, previous: Option<String> }
   | ClearReaperState
 
-SkipReason = OptedOut | ReportOnlyScope | CannotScaleToZero | UnsupportedOwner
-           | ManagedByController | ManagedByAutoscaler | PartiallyAvailable
-           | RateLimited | ReapCeilingReached
+SkipReason = ReportOnlyScope | CannotScaleToZero | ManagedByController
+           | ManagedByAutoscaler | PartiallyAvailable | RateLimited
+           | ReapCeilingReached
 
 Mode = Off < Report < Full        # effective = min(global, namespace, workload)
 ```

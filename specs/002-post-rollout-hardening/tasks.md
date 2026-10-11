@@ -182,7 +182,7 @@ keeps the code and the contracts in step.
 
 **Independent test**: quickstart §6.
 
-- [ ] T142 [US4] Remove `SkipReason::OptedOut` and `SkipReason::UnsupportedOwner` (and their `as_str` arms) from `crates/reaper-core/src/plan.rs`. Shrink `SkipReason::ALL` to 7, and fix the test at `crates/reaper-observability/src/telemetry.rs` (~line 776) that uses `OptedOut`. In docs:
+- [X] T142 [US4] Remove `SkipReason::OptedOut` and `SkipReason::UnsupportedOwner` (and their `as_str` arms) from `crates/reaper-core/src/plan.rs`. Shrink `SkipReason::ALL` to 7, and fix the test at `crates/reaper-observability/src/telemetry.rs` (~line 776) that uses `OptedOut`. In docs:
   - `specs/001-crashloop-reaper/data-model.md` line 93;
   - `specs/001-crashloop-reaper/spec.md` lines 382–383 (add a "removed in 002" note rather than rewriting history);
   - `docs/guides/troubleshooting.md` ~162;

@@ -773,7 +773,7 @@ mod tests {
                 WorkloadKind::Deployment,
                 "web",
                 State::Candidate,
-                Some(SkipReason::OptedOut),
+                Some(SkipReason::ReportOnlyScope),
             ),
             row(WorkloadKind::CronJob, "backup", State::Reaped, None),
         ]);
