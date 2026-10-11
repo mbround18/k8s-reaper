@@ -112,7 +112,7 @@ async fn a_cron_job_that_keeps_failing_is_suspended_and_restored() {
         &json!({
             "cycleInterval": "15s",
             "scope": { "includeNamespaces": ["cron", "kustomize"] },
-            "detection": { "crashLoopDuration": "7d", "minRestarts": 10_000 },
+            "detection": { "crashLoopDuration": "168h", "minRestarts": 10_000 },
             "cronJobs": {
                 "enabled": true,
                 "failingDuration": "10m",

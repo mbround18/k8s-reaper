@@ -36,6 +36,8 @@ every target: `make dev-kind image dev-load dev-run KUBE_CONTEXT=kind-<name>`.
 | `job/fail`                | Job that fails                                                 | ignored                   |
 | `optout/crashloop`        | Deployment labelled `reaper.boop.ninja/mode=off`                | untouched                 |
 | `cron/failing`            | CronJob `* * * * *`, container exits 1                         | candidate → suspended (full) |
+| `cron/flaky`              | CronJob that fails on even minutes, succeeds on odd ones      | never a candidate         |
+| `kustomize/failing`       | `cron/failing` applied by the Flux Kustomization               | + reconcile disabled      |
 | `sts/crashloop`           | StatefulSet, `replicas: 1`, `command: [false]`                 | candidate → reaped (full) |
 | `imagepull/missing`       | Deployment whose image does not exist (`ImagePullBackOff`)     | never a candidate         |
 | `healthy/control`         | Deployment that stays up                                       | never a candidate         |

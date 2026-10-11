@@ -170,24 +170,24 @@ thresholds; SC-008.
 
 ### Tests first
 
-- [ ] T080 [P] [US5] `detect.rs` tests: the streak starts at the first failed Job after `lastSuccessfulTime`; distinct failed Jobs are counted once via `last-failed-job`; running Jobs are ignored; a success ends the streak; Job pods still never count as crash loops
-- [ ] T081 [P] [US5] `decide.rs` tests:
+- [x] T080 [P] [US5] `detect.rs` tests: the streak starts at the first failed Job after `lastSuccessfulTime`; distinct failed Jobs are counted once via `last-failed-job`; running Jobs are ignored; a success ends the streak; Job pods still never count as crash loops
+- [x] T081 [P] [US5] `decide.rs` tests:
   - candidate at exactly 6h and 3 runs; not at 5h59m, and not with 2 runs after 3 days;
   - already suspended by someone else → state cleared, never a candidate;
   - `ManagedByController`, opt-out and `ReportOnlyScope` apply, `PartiallyAvailable`/`CannotScaleToZero`/`ManagedByAutoscaler` never do;
   - shared limits and ceiling with Deployments; Flux holds as for Deployments;
   - restore annotation and manual `suspend: false` → `Restore`; `cronJobs.enabled: false` stops observation but not restore
-- [ ] T082 [P] [US5] Add CronJob fixtures to the equivalence harness `crates/reaper-core/tests/equivalence.rs` (report writes only reaper keys; identical plan JSON in both modes)
-- [ ] T083 [P] [US5] Kube contract tests: CronJob + Job fixtures (failed, succeeded, active, history-limited) in `crates/reaper-kube/tests/snapshot.rs`; the `spec.suspend` merge patch with resourceVersion precondition in `crates/reaper-kube/tests/writer.rs`
+- [x] T082 [P] [US5] Add CronJob fixtures to the equivalence harness `crates/reaper-core/tests/equivalence.rs` (report writes only reaper keys; identical plan JSON in both modes)
+- [x] T083 [P] [US5] Kube contract tests: CronJob + Job fixtures (failed, succeeded, active, history-limited) in `crates/reaper-kube/tests/snapshot.rs`; the `spec.suspend` merge patch with resourceVersion precondition in `crates/reaper-kube/tests/writer.rs`
 
 ### Implementation
 
-- [ ] T084 [US5] Extend `WorkloadKind` with `CronJob`, add `CronJobView`/`JobView` to `crates/reaper-core/src/model.rs`, and the `failing-since`, `failed-runs`, `last-failed-job` keys to `crates/reaper-core/src/record.rs`
-- [ ] T085 [US5] Add `cronJobs` (`enabled`, `failingDuration` 10m–7d, `minFailedRuns` 1–1000) to `crates/reaper-core/src/config.rs` and the CRD in `crates/reaper-kube/src/crd.rs`; regenerate the CRD golden file
-- [ ] T086 [US5] Implement CronJob streak detection in `detect.rs` and the CronJob paths in `decide.rs` (`SuspendCronJob`/`ResumeCronJob` actions)
-- [ ] T087 [US5] Execute `SuspendCronJob`/`ResumeCronJob` through `ClusterWriter::set_cronjob_suspend` in `crates/reaper-core/src/executor.rs`; emit `JobFailuresObserved`/`JobFailuresRecovered`; `cronjob_suspend`/`cronjob_resume` metrics
-- [ ] T088 [US5] CronJob and Job reflectors in `crates/reaper-kube/src/snapshot.rs` and the suspend patch in `crates/reaper-kube/src/writer.rs`; trigger an immediate cycle when a reaped CronJob's `spec.suspend` turns false
-- [ ] T089 [US5] Add the `cron/failing` dev fixture to `deploy/dev/` and write integration test `apps/k8s-reaper/tests/us5_cronjob.rs` (`#[ignore]`) for SC-008
+- [x] T084 [US5] Extend `WorkloadKind` with `CronJob`, add `CronJobView`/`JobView` to `crates/reaper-core/src/model.rs`, and the `failing-since`, `failed-runs`, `last-failed-job` keys to `crates/reaper-core/src/record.rs`
+- [x] T085 [US5] Add `cronJobs` (`enabled`, `failingDuration` 10m–7d, `minFailedRuns` 1–1000) to `crates/reaper-core/src/config.rs` and the CRD in `crates/reaper-kube/src/crd.rs`; regenerate the CRD golden file
+- [x] T086 [US5] Implement CronJob streak detection in `detect.rs` and the CronJob paths in `decide.rs` (`SuspendCronJob`/`ResumeCronJob` actions)
+- [x] T087 [US5] Execute `SuspendCronJob`/`ResumeCronJob` through `ClusterWriter::set_cronjob_suspend` in `crates/reaper-core/src/executor.rs`; emit `JobFailuresObserved`/`JobFailuresRecovered`; `cronjob_suspend`/`cronjob_resume` metrics
+- [x] T088 [US5] CronJob and Job reflectors in `crates/reaper-kube/src/snapshot.rs` and the suspend patch in `crates/reaper-kube/src/writer.rs`; trigger an immediate cycle when a reaped CronJob's `spec.suspend` turns false
+- [x] T089 [US5] Add the `cron/failing` dev fixture to `deploy/dev/` and write integration test `apps/k8s-reaper/tests/us5_cronjob.rs` (`#[ignore]`) for SC-008
 
 **Checkpoint**: SC-008 passes on k3d.
 
