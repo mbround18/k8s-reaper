@@ -8,6 +8,7 @@ use kube::runtime::events::{self, Event, Recorder, Reporter};
 use reaper_core::model::ObjectRef;
 use reaper_core::ports::{EventRecord, EventSink, EventType, WriteError};
 
+use crate::snapshot::Uids;
 use crate::writer::{api_resource, write_error};
 
 pub const REPORTING_CONTROLLER: &str = "reaper.boop.ninja/k8s-reaper";
@@ -18,6 +19,7 @@ pub const NOTE_LIMIT: usize = 1024;
 #[derive(Clone)]
 pub struct KubeEventSink {
     recorder: Recorder,
+    uids: Option<Uids>,
 }
 
 impl KubeEventSink {
@@ -30,18 +32,29 @@ impl KubeEventSink {
         };
         KubeEventSink {
             recorder: Recorder::new(client, reporter),
+            uids: None,
         }
+    }
+
+    /// Fill `regarding.uid` from `uids`, so `kubectl describe` attaches the
+    /// Events to the object.
+    #[must_use]
+    pub fn with_uids(mut self, uids: Uids) -> Self {
+        self.uids = Some(uids);
+        self
     }
 }
 
-/// The `regarding` reference. `ObjectRef` carries no uid, so none is set.
+/// The `regarding` reference. Events about cluster-scoped objects land in
+/// `default`: the API server rejects any other namespace for them.
 #[must_use]
-pub fn object_reference(target: &ObjectRef) -> ObjectReference {
+pub fn object_reference(target: &ObjectRef, uid: Option<String>) -> ObjectReference {
     ObjectReference {
         api_version: Some(api_resource(target.kind).api_version),
         kind: Some(target.kind.as_str().to_owned()),
         namespace: target.namespace.clone(),
         name: Some(target.name.clone()),
+        uid,
         ..ObjectReference::default()
     }
 }
@@ -79,7 +92,11 @@ impl EventSink for KubeEventSink {
         event_record: &EventRecord,
     ) -> impl Future<Output = Result<(), WriteError>> + Send {
         let ev = event(event_record);
-        let reference = object_reference(&event_record.regarding);
+        let uid = self
+            .uids
+            .as_ref()
+            .and_then(|u| u.get(&event_record.regarding));
+        let reference = object_reference(&event_record.regarding, uid);
         async move {
             self.recorder
                 .publish(&ev, &reference)
@@ -95,11 +112,14 @@ mod tests {
     use reaper_core::model::{NsName, ObjectKind, WorkloadKind, WorkloadRef};
 
     fn reference(kind: ObjectKind, ns: Option<&str>) -> ObjectReference {
-        object_reference(&ObjectRef {
-            kind,
-            namespace: ns.map(str::to_owned),
-            name: "x".into(),
-        })
+        object_reference(
+            &ObjectRef {
+                kind,
+                namespace: ns.map(str::to_owned),
+                name: "x".into(),
+            },
+            None,
+        )
     }
 
     #[test]
@@ -121,19 +141,20 @@ mod tests {
     }
 
     #[test]
-    fn reference_carries_namespace_and_name_but_no_uid() {
+    fn reference_carries_namespace_name_and_uid() {
         let w = WorkloadRef::new(WorkloadKind::CronJob, "batch", "nightly").object_ref();
         assert_eq!(
-            object_reference(&w),
+            object_reference(&w, Some("u-1".into())),
             ObjectReference {
                 api_version: Some("batch/v1".into()),
                 kind: Some("CronJob".into()),
                 namespace: Some("batch".into()),
                 name: Some("nightly".into()),
+                uid: Some("u-1".into()),
                 ..ObjectReference::default()
             }
         );
-        let hr = object_reference(&ObjectRef::helm_release(&NsName::new("helm", "web")));
+        let hr = object_reference(&ObjectRef::helm_release(&NsName::new("helm", "web")), None);
         assert_eq!(hr.namespace.as_deref(), Some("helm"));
         assert_eq!(hr.uid, None);
         assert_eq!(reference(ObjectKind::Namespace, None).namespace, None);

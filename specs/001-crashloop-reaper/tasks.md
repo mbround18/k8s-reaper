@@ -250,7 +250,7 @@ with the owner's agreement and saying so in the commit.
 
 ### Kubernetes adapter
 
-- [ ] G06 Events carry no `regarding.uid`, so `kubectl describe` may not attach them; Events about cluster-scoped objects (ReaperConfig) land in `default`. Fill the uid from the snapshot and put cluster-scoped Events in the reaper's own namespace (contracts/events.md)
+- [X] G06 Events carry no `regarding.uid`, so `kubectl describe` may not attach them; Events about cluster-scoped objects (ReaperConfig) land in `default`. Fill the uid from the snapshot and put cluster-scoped Events in the reaper's own namespace (contracts/events.md). Done: uid filled from the watch caches (CronJob and ReaperConfig have none until those are cached). The namespace half is not possible: the API server rejects an events.k8s.io/v1 Event about a cluster-scoped object in any namespace but `default` or `kube-system` ("involvedObject.namespace: does not match event.namespace", verified by server dry-run on kind 2026-10-10), so those stay in `default`
 - [X] G07 `scale` has no `resourceVersion` precondition, unlike metadata patches. Add one, with a writer contract test (needed before T044 full mode). The scale merge patch now carries `metadata.resourceVersion`; a 409 maps to `Conflict`
 - [X] G08 The reaper-flux `HelmRelease` type is minimal (enough for the snapshot). Reconcile it with T045 rather than writing a second one
 - [ ] G09 Crash-looping pods with no supported owner are only logged. Decide with the owner whether they get a metric or Event (spec.md is silent); record the decision in spec.md Edge Cases

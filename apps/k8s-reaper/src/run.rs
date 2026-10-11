@@ -92,7 +92,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
 
     let instance = std::env::var("HOSTNAME").unwrap_or_else(|_| "k8s-reaper".to_owned());
     let writer = KubeWriter::new(client.clone());
-    let events = KubeEventSink::new(client.clone(), instance);
+    let events = KubeEventSink::new(client.clone(), instance).with_uids(caches.uids());
     let mut configs = ConfigSource::new(Api::all(client), args.config_name.clone());
     let notifier = start_notifier(&metrics)?;
     let mut channels = Channels::default();

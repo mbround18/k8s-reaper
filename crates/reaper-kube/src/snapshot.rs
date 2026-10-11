@@ -23,8 +23,8 @@ use kube::{Client, Resource, ResourceExt};
 use reaper_core::Timestamp;
 use reaper_core::decide::wants_immediate_cycle;
 use reaper_core::model::{
-    ContainerView, FluxRefs, HelmReleaseView, NamespaceView, NsName, OwnerRef, PodView, Snapshot,
-    Termination, WorkloadKind, WorkloadRef, WorkloadView,
+    ContainerView, FluxRefs, HelmReleaseView, NamespaceView, NsName, ObjectKind, ObjectRef,
+    OwnerRef, PodView, Snapshot, Termination, WorkloadKind, WorkloadRef, WorkloadView,
 };
 use reaper_core::record::{FLUX_RECONCILE, MODE_KEY, PREFIX, STATE_LABEL};
 use reaper_flux::helmrelease::{self, HelmRelease};
@@ -463,10 +463,61 @@ impl Caches {
         }
     }
 
+    /// A uid lookup over these caches, for Events' `regarding.uid`.
+    #[must_use]
+    pub fn uids(&self) -> Uids {
+        Uids {
+            namespaces: self.namespaces.clone(),
+            pods: self.pods.clone(),
+            deployments: self.deployments.clone(),
+            stateful_sets: self.stateful_sets.clone(),
+            daemon_sets: self.daemon_sets.clone(),
+            helm_releases: self.helm_releases.clone(),
+        }
+    }
+
     #[must_use]
     pub fn snapshot(&self, now: Timestamp) -> Snapshot {
         build_snapshot(&self.objects(), now, &self.reaper_namespace)
     }
+}
+
+/// Finds the uid of a cached object. Kinds the caches do not hold (CronJob,
+/// ReaperConfig) have none.
+#[derive(Clone)]
+pub struct Uids {
+    namespaces: Store<Namespace>,
+    pods: Store<Pod>,
+    deployments: Store<Deployment>,
+    stateful_sets: Store<StatefulSet>,
+    daemon_sets: Store<DaemonSet>,
+    helm_releases: Option<Store<HelmRelease>>,
+}
+
+impl Uids {
+    #[must_use]
+    pub fn get(&self, target: &ObjectRef) -> Option<String> {
+        match target.kind {
+            ObjectKind::Namespace => uid_of(&self.namespaces, target),
+            ObjectKind::Pod => uid_of(&self.pods, target),
+            ObjectKind::Deployment => uid_of(&self.deployments, target),
+            ObjectKind::StatefulSet => uid_of(&self.stateful_sets, target),
+            ObjectKind::DaemonSet => uid_of(&self.daemon_sets, target),
+            ObjectKind::HelmRelease => self.helm_releases.as_ref().and_then(|s| uid_of(s, target)),
+            ObjectKind::CronJob | ObjectKind::ReaperConfig => None,
+        }
+    }
+}
+
+fn uid_of<K>(store: &Store<K>, target: &ObjectRef) -> Option<String>
+where
+    K: Resource<DynamicType = ()> + Clone,
+{
+    let mut key = reflector::ObjectRef::<K>::new(&target.name);
+    if let Some(ns) = &target.namespace {
+        key = key.within(ns);
+    }
+    store.get(&key).and_then(|obj| obj.meta().uid.clone())
 }
 
 impl Drop for Caches {
@@ -546,4 +597,61 @@ where
         }
         futures::future::ready(())
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store<K>(objects: Vec<K>) -> Store<K>
+    where
+        K: Resource<DynamicType = ()> + Clone,
+    {
+        let (store, mut writer) = reflector::store();
+        for obj in objects {
+            writer.apply_watcher_event(&watcher::Event::Apply(obj));
+        }
+        store
+    }
+
+    fn meta(namespace: Option<&str>, name: &str, uid: &str) -> ObjectMeta {
+        ObjectMeta {
+            namespace: namespace.map(str::to_owned),
+            name: Some(name.to_owned()),
+            uid: Some(uid.to_owned()),
+            ..ObjectMeta::default()
+        }
+    }
+
+    #[test]
+    fn uids_come_from_the_caches() {
+        let uids = Uids {
+            namespaces: store(vec![Namespace {
+                metadata: meta(None, "shop", "ns-1"),
+                ..Namespace::default()
+            }]),
+            pods: store(vec![]),
+            deployments: store(vec![Deployment {
+                metadata: meta(Some("shop"), "web", "d-1"),
+                ..Deployment::default()
+            }]),
+            stateful_sets: store(vec![]),
+            daemon_sets: store(vec![]),
+            helm_releases: None,
+        };
+        let web = WorkloadRef::new(WorkloadKind::Deployment, "shop", "web").object_ref();
+        assert_eq!(uids.get(&web).as_deref(), Some("d-1"));
+        let other = WorkloadRef::new(WorkloadKind::Deployment, "other", "web").object_ref();
+        assert_eq!(uids.get(&other), None);
+        let ns = ObjectRef {
+            kind: ObjectKind::Namespace,
+            namespace: None,
+            name: "shop".into(),
+        };
+        assert_eq!(uids.get(&ns).as_deref(), Some("ns-1"));
+        assert_eq!(
+            uids.get(&ObjectRef::helm_release(&NsName::new("shop", "web"))),
+            None
+        );
+    }
 }
