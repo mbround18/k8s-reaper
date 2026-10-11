@@ -53,6 +53,13 @@ in [data-model.md](../data-model.md#validation-rules-config). The YAML above is
 printed by `k8s-reaper crd` (CRD) and is what the chart's `values.yaml`
 renders.
 
+The reaper reads the object (`metadata.name` from `--config-name`) once at the
+start of each cycle, so an edit takes effect on the next cycle without a
+restart. A new valid generation emits `ConfigApplied`; an invalid one emits
+`ConfigInvalid` once per generation, sets `Valid=False` and keeps the last valid
+config. When the object is deleted the built-in defaults apply. Status is
+merge-patched on `reaperconfigs/status` after every cycle.
+
 ## Process flags / environment
 
 | Flag                    | Env                           | Default              | Purpose                                        |

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::config::Mode;
+use crate::config_state::Counts;
 use crate::hold;
 use crate::model::{HelmReleaseView, NsName, ObjectRef, Snapshot, WorkloadRef, WorkloadView};
 use crate::notify::Notification;
@@ -48,6 +49,8 @@ pub struct Outcome {
     /// Every transition this cycle, for notification channels (US6). Sent
     /// whether or not its Event was published.
     pub notifications: Vec<Notification>,
+    /// Workloads per state after this cycle, for the `ReaperConfig` status.
+    pub counts: Counts,
 }
 
 /// Runs one cycle's plan. With the global mode `Off` nothing is written.
@@ -135,7 +138,9 @@ where
         }
     }
 
-    telemetry.workloads(&rows(snap, plan, &states));
+    let rows = rows(snap, plan, &states);
+    telemetry.workloads(&rows);
+    run.outcome.counts = Counts::from_rows(&rows);
     run.outcome
 }
 

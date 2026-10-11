@@ -1,19 +1,22 @@
 //! `k8s-reaper run`: wire the adapters to the core and run the cycle loop.
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
-use kube::{Api, Client};
+use kube::Client;
 use prometheus_client::registry::Registry;
 use reaper_core::Timestamp;
-use reaper_core::config::Config;
+use reaper_core::config::Mode;
+use reaper_core::config_state::{ConfigChange, invalid_setting_event};
 use reaper_core::decide::decide;
 use reaper_core::executor::{Outcome, execute};
-use reaper_core::notify::{Notifier as _, Throttle};
-use reaper_core::plan::CyclePlan;
-use reaper_kube::crd::ReaperConfig;
+use reaper_core::notify::{Notification, Notifier as _, Throttle};
+use reaper_core::plan::{CyclePlan, InvalidSetting};
+use reaper_core::ports::{EventRecord, EventSink as _};
+use reaper_kube::config_watch::ConfigSource;
 use reaper_kube::events::KubeEventSink;
 use reaper_kube::snapshot::Caches;
 use reaper_kube::writer::KubeWriter;
@@ -59,19 +62,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         let _ = stop_tx.send(true);
     });
 
-    let server = {
-        let router = http::router(health.clone(), Arc::new(registry));
-        let mut stop = stop.clone();
-        let addr = args.http_addr;
-        tokio::spawn(async move {
-            let shutdown = async move {
-                let _ = stop.wait_for(|s| *s).await;
-            };
-            if let Err(err) = http::serve(addr, router, shutdown).await {
-                error!(%addr, %err, "HTTP server failed");
-            }
-        })
-    };
+    let server = spawn_server(args.http_addr, &health, registry, stop.clone());
 
     let client = Client::try_default()
         .await
@@ -93,25 +84,34 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     let instance = std::env::var("HOSTNAME").unwrap_or_else(|_| "k8s-reaper".to_owned());
     let writer = KubeWriter::new(client.clone());
     let events = KubeEventSink::new(client.clone(), instance).with_uids(caches.uids());
-    let mut configs = ConfigSource::new(Api::all(client), args.config_name.clone());
+    let mut configs = ConfigSource::new(client, args.config_name.clone());
     let notifier = start_notifier(&metrics)?;
     let mut channels = Channels::default();
     let mut throttle = Throttle::default();
 
     loop {
         let started = Instant::now();
-        let config_ok = configs.refresh(&metrics).await;
-        let config = configs.active.clone();
-
         let snap = caches.snapshot(now());
+        let mut announced = Vec::new();
+        let config_ok =
+            refresh_config(&mut configs, &events, &metrics, snap.now, &mut announced).await;
+        let config = configs.state().active().clone();
+
         let plan = decide(&snap, &config);
         log_plan(&plan);
+        let invalid = configs
+            .state_mut()
+            .new_invalid_settings(&plan.invalid_settings);
+        for setting in invalid {
+            report_invalid_setting(&setting, &events, config.mode, snap.now, &mut announced).await;
+        }
         metrics.unowned_pods(&plan.unsupported);
         let mut outcome = execute(&snap, &plan, config.mode, &writer, &events, &*metrics).await;
         log_outcome(&outcome);
 
         channels.reload(&args.notifications_dir, &notifier, &metrics);
-        let transitions = std::mem::take(&mut outcome.notifications);
+        let mut transitions = std::mem::take(&mut outcome.notifications);
+        transitions.append(&mut announced);
         for n in throttle.admit(&config.notifications, transitions, snap.now) {
             notifier.enqueue(n, &config.notifications);
         }
@@ -124,6 +124,9 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         metrics.cycle(result, started.elapsed(), SystemTime::now());
         health.cycle_finished(Instant::now(), config.cycle_interval);
         health.set_ready(true);
+        if let Err(err) = configs.write_status(outcome.counts, now(), true).await {
+            warn!(name = configs.name(), %err, "writing ReaperConfig status failed");
+        }
 
         // The next cycle runs at the tick, or sooner when a watched change
         // asks for one (T054), but never within MIN_GAP of this one.
@@ -210,65 +213,109 @@ impl Channels {
     }
 }
 
-/// The active configuration: built-in defaults while no ReaperConfig exists,
-/// and the last valid one while the current one is invalid (FR-026).
-struct ConfigSource {
-    api: Api<ReaperConfig>,
-    name: String,
-    active: Config,
-    generation: Option<i64>,
+/// Reads the ReaperConfig and reports a change as a log line, an Event and a
+/// notification (FR-026, T063). Returns `false` when it could not be read; the
+/// active config is then kept.
+async fn refresh_config(
+    configs: &mut ConfigSource,
+    events: &KubeEventSink,
+    metrics: &Metrics,
+    time: Timestamp,
+    announced: &mut Vec<Notification>,
+) -> bool {
+    let change = match configs.refresh().await {
+        Ok(change) => change,
+        Err(err) => {
+            warn!(name = configs.name(), %err, "reading ReaperConfig failed; keeping the active config");
+            return false;
+        }
+    };
+    let state = configs.state();
+    let mode = state.active().mode;
+    metrics.config(mode, state.active_generation().unwrap_or(0));
+    metrics.config_valid(state.error().is_none());
+    let Some(change) = change else {
+        return true;
+    };
+    let name = configs.name();
+    match &change {
+        ConfigChange::Applied { generation } => {
+            info!(name, generation, %mode, "config applied");
+        }
+        ConfigChange::Invalid { generation, error } => {
+            warn!(name, generation, %error, "invalid ReaperConfig; keeping the last valid config");
+        }
+        ConfigChange::Removed => info!(name, "ReaperConfig removed; using built-in defaults"),
+    }
+    if let Some(event) = change.event(name) {
+        announce(events, event, mode, time, announced).await;
+    }
+    true
 }
 
-impl ConfigSource {
-    fn new(api: Api<ReaperConfig>, name: String) -> Self {
-        Self {
-            api,
-            name,
-            active: Config::default(),
-            generation: None,
-        }
-    }
-
-    /// Reads the ReaperConfig. Returns `false` when it could not be read.
-    async fn refresh(&mut self, metrics: &Metrics) -> bool {
-        let object = match self.api.get_opt(&self.name).await {
-            Ok(object) => object,
-            Err(err) => {
-                warn!(name = %self.name, %err, "reading ReaperConfig failed; keeping the active config");
-                return false;
-            }
+/// Serves health and metrics until `stop` turns true.
+fn spawn_server(
+    addr: SocketAddr,
+    health: &Health,
+    registry: Registry,
+    mut stop: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let router = http::router(health.clone(), Arc::new(registry));
+    tokio::spawn(async move {
+        let shutdown = async move {
+            let _ = stop.wait_for(|s| *s).await;
         };
-        let Some(object) = object else {
-            if self.generation.is_some() {
-                info!(name = %self.name, "ReaperConfig removed; using built-in defaults");
-            }
-            self.apply(Config::default(), 0, metrics);
-            self.generation = None;
-            metrics.config_valid(true);
-            return true;
-        };
-        let generation = object.metadata.generation.unwrap_or_default();
-        match object.spec.to_config() {
-            Ok(config) => {
-                if self.generation != Some(generation) {
-                    info!(name = %self.name, generation, mode = %config.mode, "config applied");
-                }
-                self.apply(config, generation, metrics);
-                self.generation = Some(generation);
-                metrics.config_valid(true);
-            }
-            Err(err) => {
-                warn!(name = %self.name, generation, %err, "invalid ReaperConfig; keeping the last valid config");
-                metrics.config_valid(false);
-            }
+        if let Err(err) = http::serve(addr, router, shutdown).await {
+            error!(%addr, %err, "HTTP server failed");
         }
-        true
-    }
+    })
+}
 
-    fn apply(&mut self, config: Config, generation: i64, metrics: &Metrics) {
-        metrics.config(config.mode, generation);
-        self.active = config;
+/// A mode label or threshold override that could not be used, reported once
+/// until it is fixed (FR-026).
+async fn report_invalid_setting(
+    setting: &InvalidSetting,
+    events: &KubeEventSink,
+    mode: Mode,
+    time: Timestamp,
+    announced: &mut Vec<Notification>,
+) {
+    warn!(
+        object = %setting.object,
+        key = %setting.key,
+        value = %setting.value,
+        "invalid reaper setting ignored"
+    );
+    announce(
+        events,
+        invalid_setting_event(setting),
+        mode,
+        time,
+        announced,
+    )
+    .await;
+}
+
+/// Publishes a config Event and queues the same transition for notification.
+async fn announce(
+    events: &KubeEventSink,
+    event: EventRecord,
+    mode: Mode,
+    time: Timestamp,
+    announced: &mut Vec<Notification>,
+) {
+    if let Err(err) = events.publish(&event).await {
+        warn!(object = %event.regarding, reason = event.reason, %err, "emitting Event failed");
     }
+    announced.push(Notification {
+        reason: event.reason,
+        event_type: event.event_type,
+        regarding: event.regarding,
+        state: None,
+        mode,
+        note: event.note,
+        time,
+    });
 }
 
 fn log_plan(plan: &CyclePlan) {
@@ -278,14 +325,6 @@ fn log_plan(plan: &CyclePlan) {
             pod = %pod.pod,
             owner_kind = pod.owner_kind.as_deref().unwrap_or("none"),
             "crash-looping pod has no supported owner; not tracked"
-        );
-    }
-    for setting in &plan.invalid_settings {
-        warn!(
-            object = %setting.object,
-            key = %setting.key,
-            value = %setting.value,
-            "invalid reaper setting ignored"
         );
     }
 }
