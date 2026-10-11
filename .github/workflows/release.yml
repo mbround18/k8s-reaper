@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  docker-release:
+    needs: ci
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: write
+    uses: mbround18/gh-reusable/.github/workflows/docker-release.yaml@main
+    with:
+      image: mbround18/k8s-reaper
+      context: .
+      dockerfile: ./Dockerfile
+      platforms: linux/amd64
+      ghcr: true
+      ghcr_username: ${{ github.repository_owner }}
+      dockerhub_username: ${{ vars.DOCKER_USERNAME }}
+    secrets:
+      DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

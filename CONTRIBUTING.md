@@ -358,14 +358,18 @@ first sweep with `cargo sweep --time 14 --dry-run`.
 
 ## Release process
 
-There is no release automation yet. No workflow publishes an image, tags a
-version or publishes a chart. What exists:
+Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`: the CI checks,
+then the shared `mbround18/gh-reusable` Docker release, which pushes
+`mbround18/k8s-reaper` to Docker Hub and GHCR. It needs the repository
+variable `DOCKER_USERNAME` and the secret `DOCKER_TOKEN`. The chart is
+published from its own repository.
 
 - **Image.** The `Dockerfile` is multi-stage: cargo-chef planner, cook and
   builder stages, then `gcr.io/distroless/cc-debian13:nonroot`, running as
   `USER 65532:65532`. The runtime's Debian release matches the builder's, so
   glibc matches. `make image` builds it locally. CI builds it on every push
-  and pull request but does not push it.
+  and pull request; only a release tag pushes it. The image is `linux/amd64`
+  only.
 - **Chart.** The Helm chart is not in this repository. It lives in
   `mbround18/helm-charts` as `charts/k8s-reaper`. Its CRD comes from
   `k8s-reaper crd`, so a CRD change here (and its golden file) needs a
