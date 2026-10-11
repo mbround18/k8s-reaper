@@ -89,12 +89,12 @@ curl -s localhost:8080/metrics | grep '^reaper_'
 | `reaper_workload_state` | gauge | `namespace`, `kind`, `name`, `state` | `1` for each tracked workload, with its current state. |
 | `reaper_workload_skipped` | gauge | `namespace`, `kind`, `name`, `reason` | `1` while a candidate is skipped, with the skip reason. |
 | `reaper_workload_crashloop_seconds` | gauge | `namespace`, `kind`, `name` | Seconds since the crash loop started (`crashloop-since`), or since a CronJob started failing (`failing-since`). |
-| `reaper_actions_total` | counter | `action`, `result`, `mode` | Reap and restore steps, by outcome. |
+| `reaper_actions_total` | counter | `action`, `result`, `mode` | Reap and restore steps, by outcome, and failed writes of the reaper's own record (`action="record"`). |
 | `reaper_cycles_total` | counter | `result` | Cycles, `ok` or `error`. |
 | `reaper_cycle_duration_seconds` | histogram | none | Time to decide and act in one cycle. 12 buckets from 0.05 s, doubling up to 102.4 s. |
-| `reaper_last_cycle_timestamp_seconds` | gauge | none | Unix time the last cycle finished. |
+| `reaper_last_cycle_timestamp_seconds` | gauge | none | Unix time the last cycle finished. Until the first cycle finishes, the time the process started. |
 | `reaper_config_info` | gauge | `mode`, `generation` | `1` for the config in use: its mode and `ReaperConfig` generation (`0` for built-in defaults). |
-| `reaper_config_valid` | gauge | none | `1` if the latest `ReaperConfig` generation is valid, `0` if not. |
+| `reaper_config_valid` | gauge | none | `1` if the latest `ReaperConfig` generation is valid, `0` if not. Absent until the first config read. |
 | `reaper_notifications_total` | counter | `channel`, `provider`, `result` | Notifications by channel. See [notifications.md](notifications.md#4-check-that-it-works). |
 | `reaper_notification_channels` | gauge | `channel`, `provider`, `valid` | `1` per channel file read in the last cycle. |
 | `reaper_unowned_crashlooping_pods` | gauge | `namespace` | Crash-looping pods with no supported owner (bare pods, or owners such as an Argo Rollout). These are never tracked and get no Event. |
@@ -107,7 +107,7 @@ curl -s localhost:8080/metrics | grep '^reaper_'
 | `kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `CronJob` |
 | `state` | `observed`, `candidate`, `reaping`, `reaped` |
 | `reason` | `ReportOnlyScope`, `CannotScaleToZero`, `ManagedByController`, `ManagedByAutoscaler`, `PartiallyAvailable`, `RateLimited`, `ReapCeilingReached`. What each means and what to do: [troubleshooting.md](troubleshooting.md#a-candidate-is-never-reaped). |
-| `action` | `reap`, `restore` (one per whole reap or restore), and the steps `scale`, `kustomize_disable`, `kustomize_restore`, `helmrelease_hold`, `helmrelease_release`, `cronjob_suspend`, `cronjob_resume` |
+| `action` | `reap`, `restore` (one per whole reap or restore), and the steps `scale`, `kustomize_disable`, `kustomize_restore`, `helmrelease_hold`, `helmrelease_release`, `cronjob_suspend`, `cronjob_resume`. `record` is a failed write of the reaper's own state label, record or plan annotation: only `result="error"` is ever counted for it. |
 | `result` (actions) | `success`, `error`, or `planned` (report mode: a reap that full mode would have run) |
 | `mode` | `report` or `full`, the global mode at the time |
 | `result` (notifications) | `sent`, `failed`, `dropped`, `filtered` |
@@ -130,14 +130,23 @@ curl -s localhost:8080/metrics | grep '^reaper_'
 - **A failed reap counts twice:** once for the step that failed (for example
   `action="scale",result="error"`) and once for the reap
   (`action="reap",result="error"`).
+- **A failed write of the reaper's own record counts as `record`.** When the
+  reaper cannot write its state label or annotations on a workload (RBAC, an
+  admission webhook), it counts `action="record",result="error"` and records
+  a `RecordFailed` Event, every cycle until the write succeeds. A conflict
+  (the object changed at the same moment) or a workload deleted mid-cycle is
+  retried quietly and not counted.
 - **`reaper_cycles_total{result="error"}` is wider than action errors.** A
   cycle is also an error when the reaper could not read the `ReaperConfig`, or
-  could not write its own label or annotations on a workload. Those failures
-  are logged but not counted in `reaper_actions_total`.
+  hit one of the quiet conflicts above. Those are logged but not counted in
+  `reaper_actions_total`.
 - **Counters start at zero when the pod restarts.** Use `increase()` or
   `rate()`, never the raw value.
-- **Before the first cycle**, `reaper_config_valid` and
-  `reaper_last_cycle_timestamp_seconds` read `0`.
+- **At start-up neither alerting gauge reads `0`.**
+  `reaper_last_cycle_timestamp_seconds` holds the process start time until
+  the first cycle finishes, and `reaper_config_valid` has no sample until the
+  config is first read. So a restart, or caches that take a few minutes to
+  sync, trips neither `ReaperStalled` nor `ReaperConfigInvalid`.
 
 Cardinality is bounded by the number of workloads in a state, plus one series
 per namespace with unowned crash-looping pods.
@@ -313,9 +322,10 @@ increase(reaper_actions_total{result="error"}[15m]) > 0
 
 For `0m`, severity `critical`.
 
-**What it means.** A reap or restore step failed against the Kubernetes API
-in the last 15 minutes. The alert has the `action` and `mode` labels but not
-the workload. It resolves 15 minutes after the last error.
+**What it means.** A reap or restore step, or a write of the reaper's own
+record (`action="record"`), failed against the Kubernetes API in the last 15
+minutes. The alert has the `action` and `mode` labels but not the workload.
+It resolves 15 minutes after the last error.
 
 The reaper retries on the next cycle from what is visible on the objects. A
 half-done reap shows the state `reaping`, and finishes or rolls forward;
@@ -341,6 +351,33 @@ nothing is done twice.
 4. If the same action keeps failing, the alert stays firing because
    `increase` keeps seeing new errors.
 
+#### When `action="record"`
+
+The reaper could not write its own state label or its record or plan
+annotations on a workload. Nothing else happens to that workload until the
+write succeeds: its state does not advance, so it is neither reaped nor
+restored. The reaper tries again every cycle.
+
+1. Find the workload. Each one gets a `RecordFailed` Warning Event, and a
+   repeat continues the same Event series rather than adding new ones:
+
+   ```sh
+   kubectl get events -A --field-selector reason=RecordFailed
+   ```
+
+   The note is the API server's error.
+2. Typical causes:
+   - **`forbidden`**: the reaper may not `patch` that kind (Deployments,
+     StatefulSets, DaemonSets or CronJobs). See
+     [troubleshooting.md](troubleshooting.md#label-writes-are-failing).
+   - **`admission webhook ... denied the request`**: a policy engine (Kyverno,
+     Gatekeeper) rejects the reaper's `reaper.boop.ninja/*` labels or
+     annotations. Exempt the reaper's ServiceAccount, or those keys.
+3. The alert resolves 15 minutes after the last failed write.
+
+`RecordFailed` is not sent to notification channels unless you add it to
+`notifications.reasons` ([notifications.md](notifications.md#3-choose-what-is-sent)).
+
 ### ReaperStalled
 
 ```promql
@@ -353,8 +390,9 @@ For `5m`, severity `critical`.
 reaper is not detecting, reaping or restoring anything. Restore annotations
 are not acted on.
 
-The gauge is `0` until the first cycle finishes, so this also fires when a
-freshly started reaper never gets its watch caches synced.
+Until the first cycle finishes the gauge holds the process start time, so
+a restart does not trip it. A freshly started reaper whose watch caches never
+sync fires it 15 minutes after the start (600 s, then the 5 m `for`).
 
 **What to do.**
 
@@ -386,6 +424,9 @@ reaper_config_valid == 0
 ```
 
 For `5m`, severity `warning`.
+
+The series is absent until the reaper first reads its config, so it cannot
+fire during start-up.
 
 **What it means.** The latest `ReaperConfig` generation failed validation
 (for example a duration out of range). The reaper keeps using the last valid
@@ -459,6 +500,9 @@ sum(increase(reaper_actions_total{action="restore", result="success"}[24h]))
 
 # Failed steps, by action
 sum by (action) (increase(reaper_actions_total{result="error"}[1h]))
+
+# Failed writes of the reaper's own label and annotations
+sum(increase(reaper_actions_total{action="record", result="error"}[1h]))
 
 # Share of cycles that ended in an error
 sum(rate(reaper_cycles_total{result="error"}[15m])) / sum(rate(reaper_cycles_total[15m]))
@@ -543,7 +587,10 @@ kubectl get events -n default --field-selector reason=ConfigInvalid
 A few details worth knowing:
 
 - Events about a workload are on the workload (Deployment, StatefulSet,
-  DaemonSet, CronJob), not on its pods. `HelmReleaseHeld` and
+  DaemonSet, CronJob), not on its pods. One exception to "on a change": a
+  `RecordFailed` Warning repeats every cycle while the reaper cannot write
+  its own label or annotations on the workload; see
+  [`ReaperActionFailed`](#when-actionrecord). `HelmReleaseHeld` and
   `HelmReleaseReleased` are on the HelmRelease.
 - The `Restored` note starts with how the restore was triggered:
   `requested` (the annotation), `manual-scale-up`, `manual-resume`, or

@@ -349,6 +349,44 @@ kubectl auth can-i create events.events.k8s.io --as=$SA -A
 kubectl auth can-i patch reaperconfigs/status --as=$SA
 ```
 
+### Label writes are failing
+
+`RecordFailed` Warning Events on a workload, `ReaperActionFailed` firing with
+`action="record"`, and `write failed; retrying next cycle` in the logs. The
+workload's `reaper.boop.ninja/state` label does not change: it stays
+unlabelled or stuck in its old state, and is neither reaped nor restored.
+
+```sh
+kubectl get events -A --field-selector reason=RecordFailed
+```
+
+**Cause:** the API server refuses the reaper's patch of its own label and
+annotations on the workload. The Event's note is the refusal:
+
+- **`forbidden`**: the ServiceAccount may not `patch` that kind. The reaper
+  needs `patch` on `deployments`, `statefulsets`, `daemonsets` and
+  `cronjobs`, even in report mode, because it records its state on the
+  workload.
+- **`admission webhook "..." denied the request`**: a policy engine rejects
+  labels or annotations it does not expect. The reaper only writes keys
+  under `reaper.boop.ninja/`.
+
+**Fix:** for `forbidden`, restore the permission (compare with the chart's
+`templates/rbac.yaml`):
+
+```sh
+SA=system:serviceaccount:k8s-reaper:k8s-reaper
+kubectl auth can-i patch deployments --as=$SA -n <namespace>
+kubectl auth can-i patch cronjobs.batch --as=$SA -n <namespace>
+```
+
+For a webhook, exempt the reaper's ServiceAccount or the
+`reaper.boop.ninja/*` keys in the policy. Nothing else is needed: the reaper
+retries every cycle, and the next successful write carries on from where the
+workload is. A conflict (`object changed since it was read`) is different: it
+is an ordinary race, retried without an Event, and only worth a look if it
+repeats every cycle.
+
 ### A `404 page not found` warning at startup
 
 One WARN line from `kube_client` mentioning `404 page not found`, right after

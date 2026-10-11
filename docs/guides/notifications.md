@@ -188,6 +188,10 @@ reasons are opt-in because they can be frequent, especially in report mode:
 - `ReapSkipped`
 - `CrashLoopObserved`
 - `CrashLoopRecovered`
+- `RecordFailed`: the reaper could not write its own label or annotations on
+  a workload. It repeats every cycle until fixed, and the
+  `ReaperActionFailed` alert already covers it
+  ([monitoring.md](monitoring.md#when-actionrecord)).
 
 **A channel filter can only narrow `reasons`.** A reason missing from the
 top-level list reaches no channel. To send `ReapPlanned` to one channel only,
