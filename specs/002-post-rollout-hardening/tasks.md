@@ -191,7 +191,7 @@ keeps the code and the contracts in step.
   - `events.md`: the "Restore notes" and "Skip reasons" tables exactly as in contracts/events.md;
   - `metrics.md`: `ReaperDown` job text;
   - `config.md`: the OpenTelemetry section (FR-014). Verify every row against `crates/reaper-observability/src/tracing.rs`, including that no `#[instrument]` or `span!` exists in `crates/` or `apps/`, and correct the delta wherever the code differs.
-- [ ] T144 [US4] Write the contracts test `apps/k8s-reaper/tests/contracts.rs` (not ignored). It reads `specs/001-crashloop-reaper/contracts/events.md` and `metrics.md` with `include_str!` and parses the first backticked cell of each row under the "Skip reasons" and "Restore notes" headings, plus the `action ∈ …` list in metrics.md. It then asserts set equality with `SkipReason::ALL`, `RestoreKind::ALL` and `ActionKind::ALL` (`as_str`), and its failure message names the missing or extra strings (FR-015, SC-007). Add `reaper-core` as a dev-dependency only if it is not already a dependency of the app.
+- [X] T144 [US4] Write the contracts test `apps/k8s-reaper/tests/contracts.rs` (not ignored). It reads `specs/001-crashloop-reaper/contracts/events.md` and `metrics.md` with `include_str!` and parses the first backticked cell of each row under the "Skip reasons" and "Restore notes" headings, plus the `action ∈ …` list in metrics.md. It then asserts set equality with `SkipReason::ALL`, `RestoreKind::ALL` and `ActionKind::ALL` (`as_str`), and its failure message names the missing or extra strings (FR-015, SC-007). Add `reaper-core` as a dev-dependency only if it is not already a dependency of the app.
 
 ## Phase 7: User Story 5 — the chart's defaults and install paths hold up (P3)
 
