@@ -34,6 +34,22 @@ use crate::time::Timestamp;
 /// only keeps notes from growing without bound.
 const MAX_ACTIONS_IN_NOTE: usize = 8;
 
+/// The Event note limit (contracts/events.md).
+const NOTE_LIMIT: usize = 1024;
+
+/// The longest prefix of `note` within [`NOTE_LIMIT`] bytes that ends on a
+/// char boundary.
+fn cap_note(note: &str) -> &str {
+    if note.len() <= NOTE_LIMIT {
+        return note;
+    }
+    let end = (0..=NOTE_LIMIT)
+        .rev()
+        .find(|&i| note.is_char_boundary(i))
+        .unwrap_or(0);
+    &note[..end]
+}
+
 /// A write that failed this cycle. The workload's record is unchanged, so the
 /// same transition is attempted again next cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +119,20 @@ where
         );
         let mut live = Live::new(view);
         if let Err(error) = live.patch(writer, &patch).await {
+            // A conflict or not-found is a race, retried quietly next cycle.
+            // Anything else (RBAC, admission) would repeat forever unseen, so
+            // it is counted and evented. The note has no timestamp, so a
+            // repeat continues the same Event series.
+            if let WriteError::Other(text) = &error {
+                run.record(ActionKind::Record, false);
+                run.emit(
+                    decision.workload.object_ref(),
+                    &Transition::RecordFailed,
+                    cap_note(text).to_owned(),
+                    live.state(),
+                )
+                .await;
+            }
             run.fail(&decision.workload, error);
             continue;
         }
@@ -1052,26 +1082,83 @@ mod tests {
         assert_eq!(*r.telemetry.rows.lock().unwrap(), Vec::new());
     }
 
-    #[test]
-    fn failed_write_skips_the_event_and_reports_the_failure() {
+    /// The first-sighting metadata patch fails with `error`.
+    fn failing_record_write(
+        mode: Mode,
+        error: &WriteError,
+    ) -> (Outcome, FakeEvents, FakeTelemetry) {
         let snap = looping(None, None, 3);
         let plan = decide(&snap, &Config::default());
         let writer = FakeWriter::new();
-        writer.fail_when(|_| Some(WriteError::Conflict));
+        let failing = error.clone();
+        writer.fail_when(move |_| Some(failing.clone()));
         let events = FakeEvents::default();
         let telemetry = FakeTelemetry::default();
-        let outcome = block_on(execute(
-            &snap,
-            &plan,
-            Mode::Report,
-            &writer,
-            &events,
-            &telemetry,
-        ));
-        assert_eq!(outcome.failures.len(), 1);
-        assert_eq!(outcome.failures[0].error, WriteError::Conflict);
-        assert_eq!(events.reasons(), Vec::<&str>::new());
-        assert_eq!(*telemetry.rows.lock().unwrap(), Vec::new());
+        let outcome = block_on(execute(&snap, &plan, mode, &writer, &events, &telemetry));
+        (outcome, events, telemetry)
+    }
+
+    /// A conflict or not-found is a race, retried quietly next cycle. Any
+    /// other failure (RBAC, admission, ...) is counted as `record` and gets a
+    /// `RecordFailed` Event (FR-005). Either way the state does not advance.
+    #[test]
+    fn failed_write_skips_the_event_and_reports_the_failure() {
+        for mode in [Mode::Report, Mode::Full] {
+            for error in [WriteError::Conflict, WriteError::NotFound] {
+                let (outcome, events, telemetry) = failing_record_write(mode, &error);
+                assert_eq!(outcome.failures.len(), 1, "{mode:?} {error:?}");
+                assert_eq!(outcome.failures[0].error, error);
+                assert_eq!(events.reasons(), Vec::<&str>::new(), "{mode:?} {error:?}");
+                assert_eq!(*telemetry.actions.lock().unwrap(), Vec::new());
+                assert_eq!(*telemetry.rows.lock().unwrap(), Vec::new());
+            }
+
+            let error = WriteError::Other("forbidden".into());
+            let (outcome, events, telemetry) = failing_record_write(mode, &error);
+            assert_eq!(outcome.failures.len(), 1, "{mode:?}");
+            assert_eq!(outcome.failures[0].error, error);
+            assert_eq!(
+                *telemetry.actions.lock().unwrap(),
+                vec![(ActionKind::Record, ActionResult::Error, mode)]
+            );
+            let published = events.events.lock().unwrap();
+            assert_eq!(published.len(), 1, "{mode:?}");
+            let e = &published[0];
+            assert_eq!(e.reason, "RecordFailed");
+            assert_eq!(e.event_type, EventType::Warning);
+            assert_eq!(e.action, "Record");
+            assert_eq!(e.note, "forbidden");
+            assert_eq!(e.regarding.name, "web");
+            assert_eq!(outcome.notifications.len(), 1);
+            assert_eq!(outcome.notifications[0].state, None);
+            assert_eq!(*telemetry.rows.lock().unwrap(), Vec::new());
+        }
+    }
+
+    #[test]
+    fn a_successful_record_write_records_nothing_for_record() {
+        for mode in [Mode::Report, Mode::Full] {
+            let r = run(&looping(None, None, 3), mode);
+            assert!(
+                r.telemetry
+                    .actions
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(kind, _, _)| *kind != ActionKind::Record),
+                "{mode:?}"
+            );
+            assert_eq!(r.events.reasons(), ["CrashLoopObserved"]);
+        }
+    }
+
+    #[test]
+    fn a_record_failed_note_is_capped_at_one_kilobyte() {
+        let error = WriteError::Other("é".repeat(1000));
+        let (_, events, _) = failing_record_write(Mode::Full, &error);
+        let note = &events.events.lock().unwrap()[0].note;
+        assert!(note.len() <= 1024, "{}", note.len());
+        assert!(note.starts_with('é'));
     }
 
     fn rv_of(call: &Call) -> &str {
