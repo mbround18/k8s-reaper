@@ -16,6 +16,9 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use reaper_observability::tracing::LogFormat;
 
+// Test-only hang hook; never in a release build.
+#[cfg(debug_assertions)]
+mod dev_hang;
 mod run;
 
 #[derive(Parser)]
@@ -71,13 +74,42 @@ pub struct RunArgs {
     pub notifications_dir: PathBuf,
 }
 
+/// Errors propagate: returning one from `main` exits non-zero, so a loop that
+/// ends or panics restarts the container (FR-001).
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    dispatch(Cli::parse())
+}
+
+fn dispatch(cli: Cli) -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => run::main(cli.run),
         Command::Crd => {
             print!("{}", reaper_kube::crd::crd_yaml());
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FR-001: an error from `run` comes out of `main`, which Rust turns into
+    /// a non-zero exit, so the kubelet restarts the container. A missing
+    /// namespace is the one error `run` can reach without a cluster.
+    #[test]
+    fn an_error_from_run_comes_out_of_main() {
+        let cli = Cli {
+            command: Some(Command::Run),
+            run: RunArgs {
+                config_name: "default".into(),
+                namespace: None,
+                http_addr: "127.0.0.1:0".parse().unwrap(),
+                log_format: LogFormat::Text,
+                notifications_dir: PathBuf::from("/nonexistent"),
+            },
+        };
+        let err = dispatch(cli).expect_err("run fails without a namespace");
+        assert!(err.to_string().contains("--namespace"), "{err:#}");
     }
 }

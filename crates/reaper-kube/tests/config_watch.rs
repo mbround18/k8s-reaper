@@ -7,6 +7,7 @@ use kube::client::Body;
 use reaper_core::Timestamp;
 use reaper_core::config::Mode;
 use reaper_core::config_state::{ConfigChange, Counts};
+use reaper_core::ports::Readiness;
 use reaper_kube::config_watch::ConfigSource;
 use serde_json::{Value, json};
 use tower_test::mock::{self, Handle};
@@ -150,7 +151,7 @@ async fn status_is_merge_patched_with_valid_false() {
         reaped: 1,
         ..Counts::default()
     };
-    src.write_status(counts, Timestamp(1_000), true)
+    src.write_status(counts, Timestamp(1_000), Readiness::CycleCompleted)
         .await
         .unwrap();
 
@@ -169,14 +170,125 @@ async fn status_is_merge_patched_with_valid_false() {
     assert_eq!(valid["status"], "False");
     assert_eq!(valid["observedGeneration"], 2);
     assert_eq!(status["conditions"][1]["type"], "Ready");
+    assert_eq!(status["conditions"][1]["reason"], "CycleCompleted");
+}
+
+#[tokio::test]
+async fn write_ready_patches_only_the_conditions_when_the_reason_changes() {
+    let (mut src, server) = source(vec![
+        config(1, json!({})),
+        config(1, json!({})),
+        config(1, json!({})),
+    ]);
+    src.refresh().await.unwrap();
+    src.write_status(
+        Counts::default(),
+        Timestamp(1_000),
+        Readiness::CycleCompleted,
+    )
+    .await
+    .unwrap();
+    let ready = src.ready_writer();
+    // Same reason as last written: no request.
+    ready
+        .write_ready(Readiness::CycleCompleted, Timestamp(2_000))
+        .await
+        .unwrap();
+    // From another task, as the status task does.
+    tokio::spawn(async move {
+        ready
+            .write_ready(Readiness::Stalled, Timestamp(3_000))
+            .await
+            .unwrap();
+        ready
+            .write_ready(Readiness::Stalled, Timestamp(4_000))
+            .await
+            .unwrap();
+    })
+    .await
+    .unwrap();
+
+    let seen = server.await.unwrap();
+    assert_eq!(seen.len(), 3, "one GET and two PATCHes");
+    let patch = &seen[2];
+    assert_eq!(patch.method, Method::PATCH);
+    assert_eq!(patch.path, format!("{PATH}/status"));
+    assert_eq!(patch.content_type, "application/merge-patch+json");
+    let status = &patch.body["status"];
+    assert_eq!(
+        status.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["conditions"],
+        "{status}"
+    );
+    assert_eq!(status["conditions"][0]["type"], "Valid");
+    assert_eq!(status["conditions"][0]["status"], "True");
+    let ready = &status["conditions"][1];
+    assert_eq!(ready["type"], "Ready");
+    assert_eq!(ready["status"], "False");
+    assert_eq!(ready["reason"], "Stalled");
+    assert_eq!(ready["lastTransitionTime"], "1970-01-01T00:50:00Z");
+}
+
+#[tokio::test]
+async fn write_ready_does_nothing_without_an_object() {
+    let (src, server) = source(vec![not_found()]);
+    src.ready_writer()
+        .write_ready(Readiness::CachesNotSynced, Timestamp(1_000))
+        .await
+        .unwrap();
+    let seen = server.await.unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].method, Method::GET);
+}
+
+#[tokio::test]
+async fn before_the_first_cycle_write_ready_replaces_the_previous_pods_ready() {
+    let (_, mut on_object) = config(4, json!({}));
+    on_object["status"] = json!({
+        "observedGeneration": 4,
+        "activeGeneration": 4,
+        "lastCycleTime": "1970-01-01T00:00:10Z",
+        "conditions": [
+            {"type": "Valid", "status": "True", "reason": "Valid", "message": "",
+             "observedGeneration": 4, "lastTransitionTime": "1970-01-01T00:00:05Z"},
+            {"type": "Ready", "status": "True", "reason": "CycleCompleted", "message": "",
+             "observedGeneration": 4, "lastTransitionTime": "1970-01-01T00:00:05Z"},
+        ],
+    });
+    let (src, server) = source(vec![(200, on_object.clone()), (200, on_object)]);
+    let ready = src.ready_writer();
+    ready
+        .write_ready(Readiness::CachesNotSynced, Timestamp(1_000))
+        .await
+        .unwrap();
+    // Remembered: the same reason again needs no request.
+    ready
+        .write_ready(Readiness::CachesNotSynced, Timestamp(2_000))
+        .await
+        .unwrap();
+
+    let seen = server.await.unwrap();
+    assert_eq!(seen.len(), 2, "one GET and one PATCH");
+    let conditions = &seen[1].body["status"]["conditions"];
+    assert_eq!(conditions[0]["type"], "Valid");
+    assert_eq!(conditions[0]["lastTransitionTime"], "1970-01-01T00:00:05Z");
+    assert_eq!(conditions[1]["type"], "Ready");
+    assert_eq!(conditions[1]["status"], "False");
+    assert_eq!(conditions[1]["reason"], "CachesNotSynced");
+    assert_eq!(conditions[1]["observedGeneration"], 4);
+    assert_eq!(conditions[1]["lastTransitionTime"], "1970-01-01T00:16:40Z");
 }
 
 #[tokio::test]
 async fn no_object_means_no_status_write() {
     let (mut src, server) = source(vec![not_found()]);
     assert_eq!(src.refresh().await.unwrap(), None);
-    src.write_status(Counts::default(), Timestamp(1_000), true)
-        .await
-        .unwrap();
+    src.write_status(
+        Counts::default(),
+        Timestamp(1_000),
+        Readiness::CycleCompleted,
+    )
+    .await
+    .unwrap();
     assert_eq!(server.await.unwrap().len(), 1);
 }

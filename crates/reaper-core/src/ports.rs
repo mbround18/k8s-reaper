@@ -188,6 +188,63 @@ impl ActionResult {
     }
 }
 
+/// Why the reaper is or is not ready, as the `Ready` condition on the
+/// `ReaperConfig` reports it (contracts/config.md, `status.conditions`).
+///
+/// Plain data: the HTTP adapter computes it from its health state, the kube
+/// adapter writes it. A valid config is not part of it; that shows on `Valid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Readiness {
+    /// A cycle finished within the last 3 cycle intervals.
+    CycleCompleted,
+    /// The last cycle finished 3 or more cycle intervals ago.
+    Stalled,
+    /// The caches have not synced, or no cycle has finished yet.
+    CachesNotSynced,
+}
+
+impl Readiness {
+    /// Every variant, in declaration order.
+    pub const ALL: [Readiness; 3] = [
+        Readiness::CycleCompleted,
+        Readiness::Stalled,
+        Readiness::CachesNotSynced,
+    ];
+
+    /// The variant's index in `ALL`; exhaustive, as for [`ActionKind`].
+    const fn position(self) -> usize {
+        match self {
+            Readiness::CycleCompleted => 0,
+            Readiness::Stalled => 1,
+            Readiness::CachesNotSynced => 2,
+        }
+    }
+
+    /// The condition's `reason`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Readiness::CycleCompleted => "CycleCompleted",
+            Readiness::Stalled => "Stalled",
+            Readiness::CachesNotSynced => "CachesNotSynced",
+        }
+    }
+
+    /// Whether the condition's status is `True`.
+    #[must_use]
+    pub fn is_ready(self) -> bool {
+        matches!(self, Readiness::CycleCompleted)
+    }
+}
+
+const _: () = {
+    let mut i = 0;
+    while i < Readiness::ALL.len() {
+        assert!(Readiness::ALL[i].position() == i);
+        i += 1;
+    }
+};
+
 /// Synchronous: recording a metric never waits.
 pub trait Telemetry {
     /// Replace every per-workload series with `rows` (stale ones disappear).

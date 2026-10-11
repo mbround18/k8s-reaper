@@ -10,13 +10,13 @@ use kube::Client;
 use prometheus_client::registry::Registry;
 use reaper_core::Timestamp;
 use reaper_core::config::Mode;
-use reaper_core::config_state::{ConfigChange, invalid_setting_event};
+use reaper_core::config_state::{ConfigChange, Counts, invalid_setting_event};
 use reaper_core::decide::decide;
 use reaper_core::executor::{Outcome, execute};
 use reaper_core::notify::{Notification, Notifier as _, Throttle};
 use reaper_core::plan::{CyclePlan, InvalidSetting};
 use reaper_core::ports::{EventRecord, EventSink as _};
-use reaper_kube::config_watch::ConfigSource;
+use reaper_kube::config_watch::{ConfigSource, ReadyWriter};
 use reaper_kube::events::KubeEventSink;
 use reaper_kube::snapshot::Caches;
 use reaper_kube::writer::KubeWriter;
@@ -67,35 +67,46 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     let client = Client::try_default()
         .await
         .context("building the Kubernetes client")?;
-    let caches = Caches::start(client.clone(), namespace.clone())
-        .await
-        .context("starting the watch caches")?;
-    info!(
-        keda = caches.keda_enabled(),
-        flux = caches.flux_enabled(),
-        "waiting for caches to sync"
+    let mut configs = ConfigSource::new(client.clone(), args.config_name.clone());
+    // The status task starts before the caches sync, so `Ready` says
+    // `CachesNotSynced` while they do (T126).
+    let interval = spawn_status_task(
+        configs.ready_writer(),
+        health.clone(),
+        configs.state().active().cycle_interval,
+        stop.clone(),
     );
-    tokio::select! {
-        synced = caches.wait_until_synced() => synced.context("watch caches stopped before syncing")?,
-        () = stopped(stop.clone()) => return Ok(()),
-    }
-    info!("caches synced");
+    let Some(caches) = start_caches(client.clone(), namespace, &health, stop.clone()).await? else {
+        return Ok(());
+    };
 
     let instance = std::env::var("HOSTNAME").unwrap_or_else(|_| "k8s-reaper".to_owned());
     let writer = KubeWriter::new(client.clone());
     let events = KubeEventSink::new(client.clone(), instance).with_uids(caches.uids());
-    let mut configs = ConfigSource::new(client, args.config_name.clone());
     let notifier = start_notifier(&metrics)?;
     let mut channels = Channels::default();
     let mut throttle = Throttle::default();
+    #[cfg(debug_assertions)]
+    let mut hang = crate::dev_hang::DevHang::from_env();
 
     loop {
         let started = Instant::now();
+        health.cycle_started(started, configs.state().active().cycle_interval);
+        #[cfg(debug_assertions)]
+        hang.cycle().await;
         let snap = caches.snapshot(now());
         let mut announced = Vec::new();
-        let config_ok =
-            refresh_config(&mut configs, &events, &metrics, snap.now, &mut announced).await;
+        let config_ok = refresh_config(
+            &mut configs,
+            &events,
+            &metrics,
+            &health,
+            snap.now,
+            &mut announced,
+        )
+        .await;
         let config = configs.state().active().clone();
+        interval.send_if_modified(|i| std::mem::replace(i, config.cycle_interval) != *i);
 
         let plan = decide(&snap, &config);
         log_plan(&plan);
@@ -122,11 +133,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             CycleResult::Error
         };
         metrics.cycle(result, started.elapsed(), SystemTime::now());
-        health.cycle_finished(Instant::now(), config.cycle_interval);
-        health.set_ready(true);
-        if let Err(err) = configs.write_status(outcome.counts, now(), true).await {
-            warn!(name = configs.name(), %err, "writing ReaperConfig status failed");
-        }
+        finish_cycle(&health, &mut configs, outcome.counts).await;
 
         // The next cycle runs at the tick, or sooner when a watched change
         // asks for one (T054), but never within MIN_GAP of this one.
@@ -216,10 +223,15 @@ impl Channels {
 /// Reads the ReaperConfig and reports a change as a log line, an Event and a
 /// notification (FR-026, T063). Returns `false` when it could not be read; the
 /// active config is then kept.
+///
+/// Once a valid config, or the built-in defaults with no object, is in force,
+/// tells `health` so (FR-003); that latches, so a later invalid edit does not
+/// make the pod unready.
 async fn refresh_config(
     configs: &mut ConfigSource,
     events: &KubeEventSink,
     metrics: &Metrics,
+    health: &Health,
     time: Timestamp,
     announced: &mut Vec<Notification>,
 ) -> bool {
@@ -234,6 +246,9 @@ async fn refresh_config(
     let mode = state.active().mode;
     metrics.config(mode, state.active_generation().unwrap_or(0));
     metrics.config_valid(state.error().is_none());
+    if state.error().is_none() {
+        health.config_applied();
+    }
     let Some(change) = change else {
         return true;
     };
@@ -251,6 +266,74 @@ async fn refresh_config(
         announce(events, event, mode, time, announced).await;
     }
     true
+}
+
+/// Starts the watch caches and waits for their first sync, then tells
+/// `health` (FR-003). `None` when shutdown was asked for first.
+async fn start_caches(
+    client: Client,
+    namespace: String,
+    health: &Health,
+    stop: watch::Receiver<bool>,
+) -> anyhow::Result<Option<Caches>> {
+    let caches = Caches::start(client, namespace)
+        .await
+        .context("starting the watch caches")?;
+    info!(
+        keda = caches.keda_enabled(),
+        flux = caches.flux_enabled(),
+        "waiting for caches to sync"
+    );
+    tokio::select! {
+        synced = caches.wait_until_synced() => synced.context("watch caches stopped before syncing")?,
+        () = stopped(stop) => return Ok(None),
+    }
+    info!("caches synced");
+    health.caches_synced();
+    Ok(Some(caches))
+}
+
+/// Records the end of a cycle in `health`, then writes the status with the
+/// readiness that follows from it (FR-003).
+async fn finish_cycle(health: &Health, configs: &mut ConfigSource, counts: Counts) {
+    let finished = Instant::now();
+    health.cycle_finished(finished, configs.state().active().cycle_interval);
+    let readiness = health.readiness_at(finished);
+    if let Err(err) = configs.write_status(counts, now(), readiness).await {
+        warn!(name = configs.name(), %err, "writing ReaperConfig status failed");
+    }
+}
+
+/// Keeps the `Ready` condition current between cycles (T126): every cycle
+/// interval it writes what `health` says, so a loop that hangs shows as
+/// `Stalled` on the ReaperConfig. It shares only `Health`'s atomics and the
+/// status mutex with the loop. A failed write is logged and retried at the
+/// next tick; nothing here ends the process.
+///
+/// Returns the sender the loop uses to change the interval.
+fn spawn_status_task(
+    ready: ReadyWriter,
+    health: Health,
+    interval: Duration,
+    stop: watch::Receiver<bool>,
+) -> watch::Sender<Duration> {
+    let (interval_tx, mut interval) = watch::channel(interval);
+    tokio::spawn(async move {
+        loop {
+            let readiness = health.readiness_at(Instant::now());
+            if let Err(err) = ready.write_ready(readiness, now()).await {
+                warn!(%err, readiness = readiness.as_str(), "writing ReaperConfig Ready failed");
+            }
+            let wait = *interval.borrow_and_update();
+            tokio::select! {
+                () = tokio::time::sleep(wait) => {}
+                // A new interval takes effect at once, not after the old one.
+                Ok(()) = interval.changed() => {}
+                () = stopped(stop.clone()) => break,
+            }
+        }
+    });
+    interval_tx
 }
 
 /// Serves health and metrics until `stop` turns true.
