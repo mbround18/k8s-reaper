@@ -76,6 +76,33 @@ kubectl --context <ctx> -n notify-dev logs deploy/echo
 kubectl --context <ctx> -n notify-dev port-forward svc/mailpit 8025   # then http://localhost:8025
 ```
 
+## Failing record writes (002 US2)
+
+`rbac-deny-patch.yaml` is the reaper's ClusterRole without `patch` on
+deployments. It checks that a failed write of the reaper's own label and
+annotations is counted and evented
+([002 quickstart §3](../../specs/002-post-rollout-hardening/quickstart.md)).
+Dev clusters only.
+
+```bash
+kubectl --context <ctx> apply -f deploy/dev/rbac-deny-patch.yaml
+# wait one cycle (15s), then with a port-forward to 8080:
+curl -s localhost:8080/metrics | grep 'action="record",result="error"'
+kubectl --context <ctx> -n plain get events --field-selector reason=RecordFailed
+# revert:
+kubectl --context <ctx> apply -f deploy/dev/reaper.yaml
+```
+
+Expect `reaper_actions_total{action="record",result="error",...}` to rise
+every cycle and one `RecordFailed` Warning series on `plain/crashloop`. The
+reaper only writes when a record changes, so this needs a Deployment whose
+record is due to change: `plain/crashloop` while it moves from observed to
+candidate, or a fresh copy (`kubectl --context <ctx> delete -f
+deploy/dev/fixtures/plain.yaml`, then `apply -f` it again; the first write
+comes once it has crash-looped a few times).
+Re-applying `reaper.yaml` restores the full ClusterRole; it changes nothing
+else that is already applied.
+
 ## Down
 
 ```bash

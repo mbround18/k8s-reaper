@@ -1,0 +1,57 @@
+# Dev only: the reaper's ClusterRole from reaper.yaml without `patch` on
+# deployments, so every write of the reaper's own label and annotations on a
+# Deployment is forbidden (002 quickstart §3, SC-004). Within one cycle,
+# reaper_actions_total{action="record",result="error"} rises and a
+# RecordFailed Warning Event appears on plain/crashloop.
+#
+# Apply (replaces the ClusterRole of the same name):
+#   kubectl --context $KUBE_CONTEXT apply -f deploy/dev/rbac-deny-patch.yaml
+# Revert (restores the full ClusterRole):
+#   kubectl --context $KUBE_CONTEXT apply -f deploy/dev/reaper.yaml
+#
+# Never apply this to a real cluster. Keep the other rules in step with
+# reaper.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-reaper
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch] # `patch` removed
+  - apiGroups: [apps]
+    resources: [statefulsets, daemonsets]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [apps]
+    resources: [deployments/scale, statefulsets/scale]
+    verbs: [get, patch, update]
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [keda.sh]
+    resources: [scaledobjects]
+    verbs: [get, list, watch]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [reaper.boop.ninja]
+    resources: [reaperconfigs]
+    verbs: [get, list, watch]
+  - apiGroups: [reaper.boop.ninja]
+    resources: [reaperconfigs/status]
+    verbs: [get, patch, update]
