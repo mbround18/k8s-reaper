@@ -493,7 +493,7 @@ mod tests {
     fn notifications_fields_parse() {
         let raw = RawConfig {
             notifications_enabled: Some(false),
-            notifications_cluster_name: Some("roanoke".into()),
+            notifications_cluster_name: Some("prod".into()),
             notifications_reasons: Some(strings(&["ReapPlanned", "Reaped"])),
             notifications_min_interval: Some("0s".into()),
             notifications_channels: Some(BTreeMap::from([(
@@ -504,7 +504,7 @@ mod tests {
         };
         let n = Config::from_raw(&raw).unwrap().notifications;
         assert!(!n.enabled);
-        assert_eq!(n.cluster_name, "roanoke");
+        assert_eq!(n.cluster_name, "prod");
         assert_eq!(
             n.reasons,
             BTreeSet::from(["ReapPlanned".into(), "Reaped".into()])
@@ -583,7 +583,7 @@ mod tests {
             min_restarts: Some(3),
             recovery_window: Some("1m".into()),
             exclude_namespaces: Some(vec![]),
-            include_namespaces: Some(vec!["slam-*".into()]),
+            include_namespaces: Some(vec!["shop-*".into()]),
             max_reaps_per_cycle: Some(0),
             max_reaped: Some(500),
             flux_kustomize: Some(false),
@@ -597,7 +597,7 @@ mod tests {
         assert_eq!(c.detection.min_restarts, 3);
         assert_eq!(c.detection.recovery_window, secs(60));
         assert_eq!(c.scope.exclude_namespaces, Vec::<String>::new());
-        assert_eq!(c.scope.include_namespaces, ["slam-*"]);
+        assert_eq!(c.scope.include_namespaces, ["shop-*"]);
         assert_eq!(c.limits.max_reaps_per_cycle, 0);
         assert_eq!(c.limits.max_reaped, 500);
         assert!(!c.flux.kustomize && !c.flux.helm_release);

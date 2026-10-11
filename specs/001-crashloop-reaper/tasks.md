@@ -55,7 +55,7 @@ and a `plan` annotation. No replicas or Flux object changes.
   - DaemonSet → `CannotScaleToZero`; `PartiallyAvailable`; `ManagedByController`; `ManagedByAutoscaler` (KEDA);
   - excluded namespace, own namespace, `includeNamespaces` globs → nothing.
 - [X] T022 [P] [US1] Dry-run-equivalence harness in `crates/reaper-core/tests/equivalence.rs` (SC-004). For every fixture in the decide tests, it runs the executor with fake ports in `Report` and `Full` and asserts identical published plan JSON. In `Report`, the fake `ClusterWriter` must receive only `reaper.boop.ninja/*` annotation/label writes (FR-012).
-- [X] T023 [P] [US1] Snapshot-mapping contract tests in `crates/reaper-kube/tests/snapshot.rs`. They use JSON fixtures in `crates/reaper-kube/tests/fixtures/` taken from scrubbed live shapes (slam-prod Deployment/ReplicaSet/Pod, fathom-dev crashloop, Job pod, ImagePullBackOff pod).
+- [X] T023 [P] [US1] Snapshot-mapping contract tests in `crates/reaper-kube/tests/snapshot.rs`. They use JSON fixtures in `crates/reaper-kube/tests/fixtures/` taken from scrubbed live shapes (shop-prod Deployment/ReplicaSet/Pod, sandbox crashloop, Job pod, ImagePullBackOff pod).
 - [X] T024 [P] [US1] Writer contract test in `crates/reaper-kube/tests/writer.rs` using a `tower-test` mock. Annotation/label merge patches carry a `resourceVersion` precondition and field manager `k8s-reaper`.
 
 ### Implementation
@@ -200,13 +200,13 @@ thresholds; SC-008.
   - signed commits.
 - [X] T071 [P] Write `docs/guides/getting-started.md` (install via Flux HelmRelease, stay in report mode, read the reports, flip to full)
 - [x] T072 [P] Write `docs/guides/restoring-a-workload.md`: the one restore command, manual scale-up, manual CronJob resume, "restore then fix" with Flux, shared HelmReleases
-- [x] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field (including `cronJobs`), opt-out labels, examples for `slam-*`
+- [x] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field (including `cronJobs`), opt-out labels, examples for `shop-*`
 - [X] T074 Measure memory and cycle time against the plan's goals (< 64 MiB, < 1 s for 300 pods) with a synthetic snapshot benchmark in `crates/reaper-core/benches/decide.rs`
 - [x] T075 Run quickstart.md end to end on k3d and tick SC-001 to SC-005, SC-007, SC-008
-  - 2026-10-10 on kind-fathom-dev: `make test` 6.1 s (SC-004, SC-007); `make test-integration`, all six stories in one run:
-    us1 60 s (SC-001), us2 68 s (SC-002), us3 501 s (SC-003), us4 385 s (SC-005), us5 506 s (SC-008), us6 60 s (SC-009). SC-006 checked on roanoke under T077.
+  - 2026-10-10 on kind-dev: `make test` 6.1 s (SC-004, SC-007); `make test-integration`, all six stories in one run:
+    us1 60 s (SC-001), us2 68 s (SC-002), us3 501 s (SC-003), us4 385 s (SC-005), us5 506 s (SC-008), us6 60 s (SC-009). SC-006 checked on the production cluster under T077.
 - [X] T076 Chart PR in `mbround18/helm-charts` (`charts/k8s-reaper`): CRD from `k8s-reaper crd`, Deployment (Recreate, 1 replica, non-root, read-only fs), RBAC per contracts/config.md, Service, ServiceMonitor, PrometheusRule per contracts/metrics.md, `ReaperConfig/default` from values (`mode: report`), notifications Secret mount (`notifications.secretName`, `optional: true`, see docs/guides/notifications.md). (Outside this repo.) Merged as mbround18/helm-charts#251 (337d9b6).
-- [X] T077 Fluxified overlay `overlays/services/k8s-reaper/` (namespace, HelmRelease → `charts/k8s-reaper`), then `uv run invoke build test`; deploy in report mode and check SC-006. (Outside this repo, after T076 is merged to the chart repo's `main`.) Done in fluxified d37accc; SC-006 checked on roanoke in report mode (all 8 expected objects flagged, nothing else labelled), then switched to full mode on 2026-10-11.
+- [X] T077 Fluxified overlay `overlays/services/k8s-reaper/` (namespace, HelmRelease → `charts/k8s-reaper`), then `uv run invoke build test`; deploy in report mode and check SC-006. (Outside this repo, after T076 is merged to the chart repo's `main`.) Done in fluxified d37accc; SC-006 checked on the production cluster in report mode (all 8 expected objects flagged, nothing else labelled), then switched to full mode on 2026-10-11.
 
 ## Phase 9: User Story 6 — notifications to Discord, webhooks and mail (P3)
 
@@ -268,7 +268,7 @@ with the owner's agreement and saying so in the commit.
 ### Behaviour not yet built (tracked elsewhere, listed so nothing is assumed done)
 
 - [X] G15 Full mode is gated in the executor until T044; a `Reaping` state currently plans nothing (`Plan::Nothing`) until US2/US3 — closed by T043/T044/T052
-- [X] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet. `us1_report` and `us6_notify` pass on kind (`make dev-kind … KUBE_CONTEXT=kind-fathom-dev`); later stories add their own
+- [X] G16 Run the `#[ignore]` integration tests (T034 and later) on k3d; none has run yet. `us1_report` and `us6_notify` pass on kind (`make dev-kind … KUBE_CONTEXT=kind-dev`); later stories add their own
 - [X] G17 FR-034's reading of Question 5 (per-workload overrides that only raise thresholds) is an interpretation; get the owner's confirmation and update spec.md Owner Decisions
 - [X] G18 kube's event `Recorder` folds a repeat of the same object, reason, action and type into the first Event's series and keeps its note, so a second `ConfigApplied` still reads "generation 6 is active" and a later `ConfigInvalid` keeps the first error. The `Valid` condition and `activeGeneration` are correct; fixed: `KubeEventSink` keys the series on the note too, as client-go does
 
@@ -293,7 +293,7 @@ today's behaviour and need updating when one closes.
 ### Chart repo (mbround18/helm-charts, outside this repo)
 
 - [X] G29 `charts/k8s-reaper/README.md` uses a `helm repo add` URL that does not exist; point it at the GitRepository/clone install the guides use (docs/guides/helm-chart.md) — closed by 002 T146 (US5; the URL existed, see 002 research R11)
-- [X] G30 The memory request is 32Mi, but the reaper used about 58Mi on roanoke watching a whole cluster; raise the request to 64Mi and check the limit leaves headroom — closed by 002 T147 (US5, chart PR)
+- [X] G30 The memory request is 32Mi, but the reaper used about 58Mi on the production cluster watching a whole cluster; raise the request to 64Mi and check the limit leaves headroom — closed by 002 T147 (US5, chart PR)
 - [X] G31 The chart's sync-wave annotations are Argo CD only and do nothing under Flux; drop them or document that CRD ordering under Flux comes from `crds: CreateReplace`. The CRD header comment is lost when the CRD is regenerated from `k8s-reaper crd`; add it in the generator or the regeneration script — closed by 002 T145, T147 (US5; sync waves were not the problem, see 002 research R12–R13)
 
 ## Dependencies
@@ -322,10 +322,10 @@ today's behaviour and need updating when one closes.
 
 ## Implementation strategy
 
-1. **MVP = Phases 1–3**: ship to roanoke in report mode (T076–T077 can follow
+1. **MVP = Phases 1–3**: ship to the production cluster in report mode (T076–T077 can follow
    US1 if the chart pins `mode: report`). It answers "what is crash-looping and
    for how long" right away.
 2. Add US2 and US3 together before anyone sets `mode: full`.
 3. US4 hardens runtime control. US5 adds CronJobs on top of the same paths. Then flip `mode: full`, possibly starting with
-   `includeNamespaces: [fathom-dev]`. The owner questions in spec.md are
+   `includeNamespaces: [sandbox]`. The owner questions in spec.md are
    answered.

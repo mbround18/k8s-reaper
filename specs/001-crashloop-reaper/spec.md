@@ -13,11 +13,11 @@ by default; full mode acts; one documented action restores a workload."
 
 ## Context
 
-The target cluster (roanoke: two-node k3s v1.36, delivered by Flux from
+The target cluster (two-node k3s v1.36, delivered by Flux from
 `mbround18/fluxified`) has workloads that have been crash-looping for days. On
-2026-10-10, `slam-prod` had six Deployments (`audit`, `authz`, `identity`,
-`ingest-serve`, `media`, `venues`) each at about 850 restarts after three days,
-and `fathom-dev/crashloop` had more than 5,000 after 19 days.
+2026-10-10, `shop-prod` had six Deployments (`orders`, `payments`, `accounts`,
+`ingest-api`, `catalog`, `search`) each at about 850 restarts after three days,
+and `sandbox/crashloop` had more than 5,000 after 19 days.
 
 The kubelet already backs off restarts (10 s, doubling, capped at 5 minutes),
 and the cap cannot be raised. So a broken workload restarts every 5 minutes
@@ -32,7 +32,7 @@ Alertmanager → Discord) already looks, and in `full` mode stops the workload i
 a way that Flux will not immediately undo and a person can reverse in one step.
 
 Failed **Jobs** are out of scope. They stop on their own via `backoffLimit`, and
-the cluster already alerts on failed Jobs. `slam-prod/ingest-*` are examples.
+the cluster already alerts on failed Jobs. `shop-prod/ingest-*` are examples.
 
 ## User Scenarios & Testing _(mandatory)_
 
@@ -321,7 +321,7 @@ messages without a restart.
 - **Workload owned by another controller** (the Deployment or StatefulSet has a
   controller ownerReference, as with operator-managed databases): report-only
   (`ManagedByController`). Acting would race that controller.
-- **Applied by plain `kubectl apply`** (no Flux labels, as `slam-prod` is today):
+- **Applied by plain `kubectl apply`** (no Flux labels, as `shop-prod` is today):
   scaled with no Flux step. The next `kubectl apply` from the owner's pipeline
   restores the declared replicas. If the workload is still broken, it is
   observed again from scratch.
@@ -403,7 +403,7 @@ messages without a restart.
 - **FR-011**: The reaper MUST NEVER observe or act on its own namespace,
   whatever the configuration says. It MUST skip namespaces in the exclude list
   (default `kube-system`, `kube-public`, `kube-node-lease`, `flux-system`). If an
-  include list is set (glob patterns, e.g. `slam-*`), it MUST consider only
+  include list is set (glob patterns, e.g. `shop-*`), it MUST consider only
   matching namespaces.
 - **FR-012**: In report mode the reaper MUST NOT change `replicas`, Flux
   annotations or HelmReleases. Its only writes are its own `reaper.boop.ninja/*`
@@ -571,8 +571,8 @@ messages without a restart.
 - **SC-005**: The reaper never changes an object in an excluded namespace, an
   opted-out workload, or its own namespace (asserted by integration tests and by
   the absence of reaper write events for those in the cluster audit log).
-- **SC-006**: On roanoke today, the six `slam-prod` Deployments and
-  `fathom-dev/crashloop` show up as candidates in report mode. The
+- **SC-006**: On the production cluster today, the six `shop-prod` Deployments and
+  `sandbox/crashloop` show up as candidates in report mode. The
   `ImagePullBackOff` pod does not. The failing `ingest` Job pods are never crash
   loop candidates. If their CronJob has failed every run for 6 hours, it shows
   up as a CronJob candidate (US5).
@@ -616,7 +616,7 @@ messages without a restart.
 - **Restore before fix**: while a workload is reaped and reconcile-disabled, a
   fix pushed to Git does not reach it. The user guide says: restore, then let
   Flux apply the fix (or restore after pushing it).
-- **Tenant namespaces** (`slam-*`) are in scope like any other namespace,
+- **Tenant namespaces** (`shop-*`) are in scope like any other namespace,
   because they are the motivating case (Question 3, answered).
 - **Delivery**: Helm chart in `mbround18/helm-charts` (`charts/k8s-reaper`),
   installed by a HelmRelease in `fluxified`. Neither is built in this feature.
@@ -640,7 +640,7 @@ reaper never causes an outage.
 ### Question 3: Tenant namespaces in full mode
 
 **Answer** (2026-10-10): A, treat them like any namespace. Once full mode is on,
-the `slam-*` crash-loopers are reaped. The tenant can still opt out with the
+the `shop-*` crash-loopers are reaped. The tenant can still opt out with the
 `reaper.boop.ninja/mode` namespace label.
 
 ### Question 4: CronJobs

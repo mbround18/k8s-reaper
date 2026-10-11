@@ -1,4 +1,4 @@
-//! One cycle on a synthetic cluster the size of roanoke (T074, plan.md
+//! One cycle on a synthetic cluster the size of the production cluster (T074, plan.md
 //! Performance Goals) and a little over: 30 namespaces, 360 pods, 120 workloads,
 //! some crash-looping, some Flux-managed, ten CronJobs with Job history.
 //!
@@ -112,7 +112,7 @@ fn add_cron_job(i: usize) -> WorkloadView {
     w
 }
 
-fn roanoke() -> Snapshot {
+fn prod_sized() -> Snapshot {
     let mut snap = snapshot();
     let mut workloads = Vec::new();
     for n in 0..NAMESPACES {
@@ -151,7 +151,7 @@ fn peak_rss() -> Option<String> {
 }
 
 fn main() {
-    let snap = roanoke();
+    let snap = prod_sized();
     let config = Config {
         mode: Mode::Full,
         ..Config::default()

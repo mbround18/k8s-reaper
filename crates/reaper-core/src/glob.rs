@@ -35,12 +35,12 @@ mod tests {
 
     #[test]
     fn globs() {
-        assert!(matches("slam-*", "slam-prod"));
-        assert!(matches("slam-*", "slam-"));
-        assert!(!matches("slam-*", "slam"));
+        assert!(matches("shop-*", "shop-prod"));
+        assert!(matches("shop-*", "shop-"));
+        assert!(!matches("shop-*", "shop"));
         assert!(matches("kube-system", "kube-system"));
         assert!(!matches("kube-system", "kube-system2"));
-        assert!(matches("*-dev", "fathom-dev"));
+        assert!(matches("*-dev", "team-dev"));
         assert!(matches("a?c", "abc"));
         assert!(!matches("a?c", "ac"));
         assert!(matches("*", "anything"));

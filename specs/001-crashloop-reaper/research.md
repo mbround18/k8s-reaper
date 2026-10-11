@@ -1,22 +1,22 @@
 # Research: MVP Crashloop Reaper
 
-Each entry: decision, why, what else was considered. Facts about roanoke were
+Each entry: decision, why, what else was considered. Facts about the production cluster were
 checked read-only on 2026-10-10.
 
 ## R1 — What the target cluster actually looks like
 
 - **Findings**:
-  - k3s `v1.36.5+k3s1`, two nodes. Flux Kustomizations: `flux-system/roanoke`,
-    `flux-system/slam-tenant`, and `slam-flux/slam-{core,dev,prod}`.
-  - The six crash-looping `slam-prod` Deployments are owned Pod → ReplicaSet →
+  - k3s `v1.36.5+k3s1`, two nodes. Flux Kustomizations: `flux-system/prod`,
+    `flux-system/shop-tenant`, and `shop-flux/shop-{core,dev,prod}`.
+  - The six crash-looping `shop-prod` Deployments are owned Pod → ReplicaSet →
     Deployment, `replicas: 1`, with about 850 restarts in 3 days. Their field
     managers are `kubectl-client-side-apply` and `kubectl-rollout`. They carry
     **no** `kustomize.toolkit.fluxcd.io/*` labels today, so for them the reaper
     only scales; there is no Flux step.
-  - `fathom-dev/crashloop` (a deliberate sandbox crash-looper, more than 5,000
-    restarts) is a ready-made test target. `fathom-dev/bad-image` is in
+  - `sandbox/crashloop` (a deliberate sandbox crash-looper, more than 5,000
+    restarts) is a ready-made test target. `sandbox/bad-image` is in
     `ImagePullBackOff`, a useful negative case.
-  - `slam-prod/ingest-*` pods are owned by Jobs (CronJob) and stay out of scope.
+  - `shop-prod/ingest-*` pods are owned by Jobs (CronJob) and stay out of scope.
 - **Consequence**: the plan supports three cases from day one: no Flux, Flux
   kustomize, and Flux Helm. The live crash-loopers exercise only the first.
 
@@ -44,7 +44,7 @@ checked read-only on 2026-10-10.
     `state.waiting.reason == CrashLoopBackOff` or
     `state.terminated`/`lastState.terminated` has a non-zero exit code or reason
     `Error`/`OOMKilled`. This covers both the backoff wait and the brief
-    "Error" phase between restarts (`fathom-dev/crashloop` shows `Error` in
+    "Error" phase between restarts (`sandbox/crashloop` shows `Error` in
     `kubectl get pods`).
   - The workload's crashloop start is persisted as annotation
     `reaper.boop.ninja/crashloop-since` on the workload. Its first healthy
@@ -188,7 +188,7 @@ checked read-only on 2026-10-10.
     2. A Prometheus text endpoint using `prometheus-client`.
   - `tracing` with `tracing-opentelemetry` for spans; JSON logs.
   - Axum + Tower serve `/healthz`, `/readyz` and `/metrics` on `:8080`.
-- **Rationale**: Discord alerts on roanoke come from kube-prometheus-stack
+- **Rationale**: Discord alerts on the production cluster come from kube-prometheus-stack
   scraping ServiceMonitors, so a pull endpoint is required. OTel is the house
   standard. A port keeps both behind one call site. The Rust
   `opentelemetry-prometheus` bridge has been unmaintained/deprecated at times,
@@ -230,7 +230,7 @@ checked read-only on 2026-10-10.
      builders, with time as a parameter. Each test asserts the plan, and
      (SC-004) that report mode publishes byte-identical plan JSON.
   2. **Adapter contract tests**: snapshot mapping from recorded JSON objects
-     (including the live `slam-prod` shapes, scrubbed), and patch bodies
+     (including the live `shop-prod` shapes, scrubbed), and patch bodies
      asserted against a `tower-test` mock API server.
   3. **Integration**: k3d with Flux installed, `#[ignore]`d and run by
      `make test-integration`, segmented per user story
@@ -240,10 +240,10 @@ checked read-only on 2026-10-10.
 
 ## R13 — Fit with fluxified's guardrails
 
-- The reaper's ServiceAccount is not a `slam-*` identity, so
+- The reaper's ServiceAccount is not a `shop-*` identity, so
   `tests/test_rbac_guardrails.py` and `overlays/security/rbac-guard/` need no
   `approved-bindings.yaml` entry. Its ClusterRole binding will still appear in
   the cluster audit trail like any cluster-scoped RBAC.
-- Its patches to `slam-*` workloads will show up in the audit log under its
+- Its patches to `shop-*` workloads will show up in the audit log under its
   ServiceAccount. That is the intended trail, and it is what SC-005 checks
   against.

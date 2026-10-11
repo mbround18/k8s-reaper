@@ -190,5 +190,5 @@ the spec was corrected to match.
 ## R14. Memory request (G30, FR-017)
 
 - **Decision**: `resources.requests.memory: 64Mi`, limit stays `128Mi`
-  (roanoke peaks about 58Mi; the kind dev cluster about 21Mi). This is a
+  (the production cluster peaks about 58Mi; the kind dev cluster about 21Mi). This is a
   chart PR, released after the reaper release that ships US1–US2.

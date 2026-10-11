@@ -86,8 +86,8 @@ reason `CannotScaleToZero`) but never reaped.
 ### `scope`
 
 Which namespaces the reaper looks at. Entries are namespace names or globs:
-`*` matches any run of characters and `?` matches exactly one, so `slam-*`
-matches `slam-prod` but not `slam`.
+`*` matches any run of characters and `?` matches exactly one, so `shop-*`
+matches `shop-prod` but not `shop`.
 
 | Field               | Type            | Default | What it does |
 | ------------------- | --------------- | ------- | ------------ |
@@ -184,13 +184,13 @@ a label and an annotation, the label is used.
 
 ```sh
 # A team opts its whole namespace out
-kubectl label namespace slam-staging reaper.boop.ninja/mode=off
+kubectl label namespace shop-staging reaper.boop.ninja/mode=off
 
 # One workload is reported but never reaped
-kubectl label deployment -n slam-prod media reaper.boop.ninja/mode=report
+kubectl label deployment -n shop-prod catalog reaper.boop.ninja/mode=report
 
 # Back to the global mode
-kubectl label namespace slam-staging reaper.boop.ninja/mode-
+kubectl label namespace shop-staging reaper.boop.ninja/mode-
 ```
 
 ### Thresholds: per-workload annotations
@@ -281,12 +281,12 @@ spec:
   mode: full
 ```
 
-### Tenant namespaces (`slam-*`)
+### Tenant namespaces (`shop-*`)
 
-The `slam-*` namespaces hold tenant workloads, and they are in scope like any
+The `shop-*` namespaces hold tenant workloads, and they are in scope like any
 other namespace. Pick the approach that fits.
 
-**Start with the tenants only.** Run full mode, but only on `slam-*`, while
+**Start with the tenants only.** Run full mode, but only on `shop-*`, while
 everything else stays out of scope. `excludeNamespaces` is left out, so its
 default still applies:
 
@@ -298,10 +298,10 @@ metadata:
 spec:
   mode: full
   scope:
-    includeNamespaces: ["slam-*"]
+    includeNamespaces: ["shop-*"]
 ```
 
-**Keep the tenants out entirely.** Add `slam-*` to the exclude list, and
+**Keep the tenants out entirely.** Add `shop-*` to the exclude list, and
 repeat the defaults, because setting the list replaces them:
 
 ```yaml
@@ -317,10 +317,10 @@ spec:
       - kube-public
       - kube-node-lease
       - flux-system
-      - "slam-*"
+      - "shop-*"
 ```
 
-Anything already reaped in `slam-*` is restored on the next cycle, with a
+Anything already reaped in `shop-*` is restored on the next cycle, with a
 `Restored` Event noted `opted-out`; after that the namespaces are not looked
 at.
 
@@ -328,7 +328,7 @@ at.
 tenant labels its own namespace:
 
 ```sh
-kubectl label namespace slam-prod reaper.boop.ninja/mode=report
+kubectl label namespace shop-prod reaper.boop.ninja/mode=report
 ```
 
 **Give a workload that restarts a lot more room.** If a workload in a tenant
@@ -340,8 +340,8 @@ after 6 hours of crash-looping and 200 restarts:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ingest-serve
-  namespace: slam-prod
+  name: ingest-api
+  namespace: shop-prod
   annotations:
     reaper.boop.ninja/crashloop-duration: 6h
     reaper.boop.ninja/min-restarts: "200"
@@ -350,7 +350,7 @@ spec:
 ```
 
 ```sh
-kubectl annotate deployment -n slam-prod ingest-serve \
+kubectl annotate deployment -n shop-prod ingest-api \
   reaper.boop.ninja/crashloop-duration=6h \
   reaper.boop.ninja/min-restarts=200
 ```

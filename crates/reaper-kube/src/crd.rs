@@ -267,12 +267,12 @@ mod tests {
         let spec: ReaperConfigSpec = serde_json::from_value(serde_json::json!({
             "mode": "full",
             "detection": { "minRestarts": 4 },
-            "scope": { "includeNamespaces": ["slam-*"] },
+            "scope": { "includeNamespaces": ["shop-*"] },
             "limits": { "maxReaped": 2 },
             "flux": { "helmRelease": false },
             "cronJobs": { "enabled": false, "failingDuration": "2h", "minFailedRuns": 5 },
             "notifications": {
-                "clusterName": "roanoke",
+                "clusterName": "prod",
                 "reasons": ["ReapPlanned"],
                 "minInterval": "30m",
                 "channels": { "ops-discord": { "reasons": ["ReapPlanned"] } }
@@ -282,13 +282,13 @@ mod tests {
         let c = spec.to_config().unwrap();
         assert_eq!(c.mode, Mode::Full);
         assert_eq!(c.detection.min_restarts, 4);
-        assert_eq!(c.scope.include_namespaces, ["slam-*"]);
+        assert_eq!(c.scope.include_namespaces, ["shop-*"]);
         assert_eq!(c.limits.max_reaped, 2);
         assert!(!c.flux.helm_release);
         assert!(!c.cron_jobs.enabled);
         assert_eq!(c.cron_jobs.failing_duration, Duration::from_hours(2));
         assert_eq!(c.cron_jobs.min_failed_runs, 5);
-        assert_eq!(c.notifications.cluster_name, "roanoke");
+        assert_eq!(c.notifications.cluster_name, "prod");
         assert!(c.notifications.reasons.contains("ReapPlanned"));
         assert_eq!(c.notifications.min_interval, Duration::from_mins(30));
         assert!(c.notifications.channels["ops-discord"].contains("ReapPlanned"));

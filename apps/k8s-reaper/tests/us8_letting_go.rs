@@ -1,8 +1,8 @@
 //! 002 US3 on the dev cluster (002 quickstart §5, FR-009, FR-010). Opt-in:
 //!
 //! ```sh
-//! make image dev-load dev-run KUBE_CONTEXT=kind-fathom-dev
-//! make test-integration STORY=us8_letting_go KUBE_CONTEXT=kind-fathom-dev
+//! make image dev-load dev-run KUBE_CONTEXT=kind-dev
+//! make test-integration STORY=us8_letting_go KUBE_CONTEXT=kind-dev
 //! ```
 //!
 //! Switches the dev ReaperConfig to full mode and lets the reaper reap the

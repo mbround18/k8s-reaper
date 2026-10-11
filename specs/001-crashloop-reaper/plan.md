@@ -50,7 +50,7 @@ The reaper is a single-replica Rust operator.
 integration suite, `#[ignore]`d, run by `make test-integration` and segmented
 per user story.
 
-**Target Platform**: Linux container on Kubernetes ≥ 1.30 (roanoke: k3s
+**Target Platform**: Linux container on Kubernetes ≥ 1.30 (production: k3s
 v1.36.5), Flux v2 with `helm.toolkit.fluxcd.io/v2`
 
 **Project Type**: Kubernetes operator (Cargo workspace: library crates + one
@@ -58,7 +58,7 @@ thin binary)
 
 **Performance Goals**:
 
-- One cycle on roanoke-sized state (about 300 pods) completes in under 1 s from
+- One cycle on production-sized state (about 300 pods) completes in under 1 s from
   cache.
 - A restore request is acted on within 5 s of the annotation landing.
 
@@ -234,7 +234,7 @@ deploy/dev/                   # k3d config + sample crash-looping Deployments (d
 3. **Rollout**:
    1. Report mode for at least a week. Compare reports against SC-006.
    2. Flip `spec.mode: full` in Git.
-   3. Optionally start with `includeNamespaces: [fathom-dev]`.
+   3. Optionally start with `includeNamespaces: [sandbox]`.
 
 ## Delivery order (each a signed commit)
 

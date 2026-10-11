@@ -16,8 +16,8 @@ behaviour applies its delta to the living contract in
 `specs/001-crashloop-reaper/contracts/` in the same change, and updates the
 guides that describe it (FR-020).
 
-Cluster work runs only with `KUBE_CONTEXT=kind-fathom-dev`, never `default`
-(roanoke).
+Cluster work runs only with `KUBE_CONTEXT=kind-dev`, never `default`
+(the production cluster).
 
 ## Phase 1: Setup
 
@@ -220,8 +220,8 @@ a guarded `ReaperDown` and a regenerable CRD.
 
 - [X] T150 `make test`, `make lint` and `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings` are all green; `cargo bench -p reaper-core --bench decide` still passes. Record the test count.
   - 2026-10-11 at `9a859b8`: 297 passed, 0 failed, 9 ignored (dev-cluster stories); lint and strict `cargo doc` clean; bench median 0.18 ms, p99 0.36 ms over 200 runs.
-- [X] T151 Run the integration suite on kind with `KUBE_CONTEXT=kind-fathom-dev`: `make image dev-load dev-run`, then `STORY=us7_health`, `STORY=us8_letting_go`, and a regression run of `us1_report` and `us3_restore`. Record the results here.
-  - 2026-10-11 at `9a859b8` on `kind-fathom-dev`: `us7_health` 2/2 on `make image-debug` with `REAPER_TEST_DEBUG_IMAGE=1`, hung-loop step included (1173 s); on the release image `us8_letting_go` 1/1 (215 s), `us1_report` 1/1 (405 s), `us3_restore` 1/1 (140 s).
+- [X] T151 Run the integration suite on kind with `KUBE_CONTEXT=kind-dev`: `make image dev-load dev-run`, then `STORY=us7_health`, `STORY=us8_letting_go`, and a regression run of `us1_report` and `us3_restore`. Record the results here.
+  - 2026-10-11 at `9a859b8` on `kind-dev`: `us7_health` 2/2 on `make image-debug` with `REAPER_TEST_DEBUG_IMAGE=1`, hung-loop step included (1173 s); on the release image `us8_letting_go` 1/1 (215 s), `us1_report` 1/1 (405 s), `us3_restore` 1/1 (140 s).
 - [X] T152 Run the start-up loop in quickstart §2 (20 restarts) and §3 (deny patch) on kind, and record the outcome against SC-003 and SC-004.
   - SC-003: 20/20 restarts read `reaper_last_cycle_timestamp_seconds` as the new process's start time (never 0) and `reaper_config_valid` 1. No Prometheus on the shared cluster, so `ALERTS` was not checked; `telemetry::startup_series_do_not_alert` covers the expressions.
   - SC-004: with the deny patch, a re-created `plain/crashloop` got a `RecordFailed` Warning (Forbidden) within 15 s and `reaper_actions_total{action="record",result="error",mode="report"} 1`. ClusterRole reverted; `can-i patch deployments` is `yes` again.
@@ -256,7 +256,7 @@ Then:
 ## Implementation strategy
 
 - **MVP**: Phase 2 plus US1. Health that tells the truth is what makes the
-  roanoke deployment self-healing.
+  the production cluster deployment self-healing.
 - Then US2, so every failure alerts, and US3, so narrowing the scope is safe.
 - US4 and US5 are cleanup. The chart PR waits for a reaper release that ships
   US1 and US2.

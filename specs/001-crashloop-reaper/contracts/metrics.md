@@ -21,7 +21,7 @@ are exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (OTel names use
 | `reaper_build_info`                     | gauge     | `version`, `git_sha`                     | 1                                                                                       |
 
 Cardinality: bounded by the number of workloads in a non-`none` state, a few
-dozen on roanoke.
+dozen on the production cluster.
 
 ## Alert rules (shipped as a PrometheusRule by the chart)
 
@@ -50,7 +50,7 @@ dozen on roanoke.
   config read.
 
 Annotations link to `docs/guides/restoring-a-workload.md`. The existing
-Alertmanager → Discord route on roanoke picks them up by severity, with no
+Alertmanager → Discord route on the production cluster picks them up by severity, with no
 new route.
 
 The `action ∈ …` list above is read by `apps/k8s-reaper/tests/contracts.rs`,

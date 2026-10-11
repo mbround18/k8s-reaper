@@ -1048,7 +1048,7 @@ mod tests {
     fn excluded_own_and_unincluded_namespaces_decide_nothing() {
         let mut snap = snapshot();
         let mut workloads = Vec::new();
-        for ns in ["kube-system", "k8s-reaper", "other", "slam-prod"] {
+        for ns in ["kube-system", "k8s-reaper", "other", "shop-prod"] {
             let mut d = deployment(ns, "web");
             d.reaper_annotations
                 .insert(CRASHLOOP_SINCE.into(), mins_ago(60).to_string());
@@ -1062,10 +1062,10 @@ mod tests {
         }
         snap.workloads = workloads;
         let mut config = Config::default();
-        config.scope.include_namespaces = vec!["slam-*".into(), "k8s-*".into()];
+        config.scope.include_namespaces = vec!["shop-*".into(), "k8s-*".into()];
         let p = decide(&snap, &config);
         let names: Vec<String> = p.decisions.iter().map(|d| d.workload.to_string()).collect();
-        assert_eq!(names, ["Deployment/slam-prod/web"]);
+        assert_eq!(names, ["Deployment/shop-prod/web"]);
     }
 
     #[test]
@@ -1651,7 +1651,7 @@ mod tests {
     #[test]
     fn a_namespace_left_out_of_the_include_list_restores_too() {
         let mut config = Config::default();
-        config.scope.include_namespaces = vec!["slam-*".into()];
+        config.scope.include_namespaces = vec!["shop-*".into()];
         opted_out_with_flux_released(&decide(&reaped_with_flux("reaped"), &config));
     }
 

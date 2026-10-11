@@ -1,15 +1,15 @@
 # Quickstart: validating post-rollout hardening
 
 Each scenario proves one success criterion on the shared kind dev cluster.
-**Always pass `KUBE_CONTEXT=kind-fathom-dev`.** The `default` context is
-roanoke, and the targets refuse anything that is not `kind-*` or `k3d-*` on
+**Always pass `KUBE_CONTEXT=kind-dev`.** The `default` context is
+the production cluster, and the targets refuse anything that is not `kind-*` or `k3d-*` on
 loopback. What each scenario expects is defined in [contracts/](./contracts/)
 and [data-model.md](./data-model.md).
 
 ## 0. Prerequisites
 
 ```sh
-export KUBE_CONTEXT=kind-fathom-dev
+export KUBE_CONTEXT=kind-dev
 make test                                   # unit, contract and contracts-drift tests
 make image dev-load dev-run KUBE_CONTEXT=$KUBE_CONTEXT
 kubectl --context $KUBE_CONTEXT -n k8s-reaper rollout status deploy/k8s-reaper

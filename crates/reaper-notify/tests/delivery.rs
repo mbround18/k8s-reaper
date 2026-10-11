@@ -145,7 +145,7 @@ fn notification(reason: &'static str, note: &str) -> Notification {
 
 fn config() -> Notifications {
     Notifications {
-        cluster_name: "roanoke".into(),
+        cluster_name: "prod".into(),
         ..Notifications::default()
     }
 }
@@ -182,7 +182,7 @@ async fn generic_payload_matches_the_contract() {
             "mode": "report",
             "note": "restarted 14 times",
             "time": "2026-10-10T16:00:00Z",
-            "cluster": "roanoke"
+            "cluster": "prod"
         })
     );
 }
@@ -208,7 +208,7 @@ async fn discord_payload_has_content_and_one_embed() {
         "format and insecure are stripped"
     );
     let content = body["content"].as_str().unwrap();
-    assert!(content.starts_with("[roanoke] Reaped Deployment plain/crashloop: x"));
+    assert!(content.starts_with("[prod] Reaped Deployment plain/crashloop: x"));
     assert_eq!(content.chars().count(), 2000);
     assert_eq!(body["embeds"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -230,7 +230,7 @@ async fn slack_payload_is_text_only() {
     assert_eq!(results(&mut rx, 1).await, [Delivery::Sent]);
     assert_eq!(
         mock.seen()[0].body,
-        json!({ "text": "[roanoke] Reaped Deployment plain/crashloop: scaled to 0" })
+        json!({ "text": "[prod] Reaped Deployment plain/crashloop: scaled to 0" })
     );
 }
 

@@ -241,7 +241,7 @@ Before deciding anything, the reaper drops every workload outside its scope:
 - **`scope.includeNamespaces`**, if set, is the only thing in. Empty means
   every namespace.
 
-Entries are names or globs (`slam-*`). A namespace that matches both lists is
+Entries are names or globs (`shop-*`). A namespace that matches both lists is
 excluded. Setting a list replaces its default; see
 [configuration](configuration.md#scope).
 

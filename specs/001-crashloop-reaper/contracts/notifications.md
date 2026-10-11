@@ -70,7 +70,7 @@ Generic payload (stable, versioned by `schema`):
   "mode": "report",
   "note": "container api in pod crashloop-7d9f… restarted 14 times …",
   "time": "2026-10-10T16:00:00Z",
-  "cluster": "roanoke"
+  "cluster": "prod"
 }
 ```
 
@@ -86,7 +86,7 @@ text is the Event note. Which reasons go out is set in ReaperConfig:
 spec:
   notifications:
     enabled: true                     # master switch; channels still come from the Secret
-    clusterName: roanoke
+    clusterName: prod
     reasons: [Reaped, ReapFailed, Restored, RestoreFailed, HelmReleaseHeld, ConfigInvalid]
     minInterval: 1h                   # per workload and reason; repeats inside it are dropped
     channels:                         # optional per-channel reason filter, by channel name

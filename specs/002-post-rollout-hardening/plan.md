@@ -7,7 +7,7 @@
 ## Summary
 
 Close gaps G19–G31, which were found while writing the guides after the first
-rollout to roanoke. The work is small changes inside the existing crates; it
+rollout to the production cluster. The work is small changes inside the existing crates; it
 adds no crate, dependency or CRD field.
 
 1. **Health that tells the truth (US1).**
@@ -53,11 +53,11 @@ as first written were wrong (R11–R13), and the spec was corrected to match.
 **Testing**:
 
 - `cargo test`: unit tests in core and adapters, and the new contracts test.
-- Integration tests run on `kind-fathom-dev`, `#[ignore]`d and split by
+- Integration tests run on `kind-dev`, `#[ignore]`d and split by
   story: `us7_health`, `us8_letting_go`.
 - The chart's Python tests run in `mbround18/helm-charts`.
 
-**Target Platform**: Kubernetes ≥ 1.30 (roanoke: k3s v1.36.5) with Flux v2
+**Target Platform**: Kubernetes ≥ 1.30 (production: k3s v1.36.5) with Flux v2
 
 **Project Type**: Kubernetes operator (Cargo workspace)
 
@@ -70,7 +70,7 @@ median 0.18 ms) must still pass.
 - `reaper-core` stays pure.
 - No new ReaperConfig fields.
 - Restores are never rate-limited.
-- Dev testing never touches roanoke or the `default` context.
+- Dev testing never touches the production cluster or the `default` context.
 
 **Scale/Scope**: One cluster with about 300 pods. Six gap groups across five
 crates, plus one chart PR.

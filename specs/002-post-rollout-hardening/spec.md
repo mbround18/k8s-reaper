@@ -17,7 +17,7 @@ contracts in line with code; chart-repo fixes."
 
 ## Context
 
-The reaper (spec 001) was deployed to roanoke on 2026-10-11, in report mode and
+The reaper (spec 001) was deployed to the production cluster on 2026-10-11, in report mode and
 then full mode. Writing the user guides against the code turned up thirteen
 places where the code, the contracts, the chart and the docs disagree. They
 are recorded as G19–G31 in `specs/001-crashloop-reaper/tasks.md` ("Found while
@@ -183,7 +183,7 @@ An operator installs from `mbround18/helm-charts`. The chart is published in
 the Helm repository at `https://mbround18.github.io/helm-charts/` (since
 2026-10-11 06:03 UTC), but this repo's guides only describe installing from a
 Git clone. The memory request (32Mi) is below what the reaper uses on a real
-cluster (about 58Mi on roanoke), the chart's Argo CD sync-wave annotations
+cluster (about 58Mi on the production cluster), the chart's Argo CD sync-wave annotations
 are unexplained to Flux users, and the CRD's header comment is lost whenever
 the CRD is regenerated.
 
@@ -200,7 +200,7 @@ chart's copy.
    repository install word for word (with Flux or with `helm`), **Then** the
    chart installs.
 2. **Given** default values, **When** the reaper runs on a cluster the size of
-   roanoke, **Then** its memory use stays below its request.
+   the production cluster, **Then** its memory use stays below its request.
 3. **Given** the chart's sync-wave annotations, **When** a Flux user reads the
    helm-chart guide, **Then** it says they are for Argo CD and have no effect
    under Flux.
@@ -302,7 +302,7 @@ chart's copy.
   from the Helm repository (a Flux `HelmRepository` and plain `helm`), next
   to the Git source they describe today, and both MUST work as written.
 - **FR-017**: The default memory request MUST be 64Mi, with a limit that
-  leaves headroom over observed use (about 58Mi on roanoke).
+  leaves headroom over observed use (about 58Mi on the production cluster).
 - **FR-018**: The helm-chart guide MUST say that the chart's sync-wave
   annotations are an Argo CD convention of the chart repository and do
   nothing under Flux. The annotations stay (11 charts there use them, and
@@ -379,4 +379,4 @@ before excluding becomes unnecessary and is removed.
 - Restores triggered by this spec (FR-009, FR-010) count
   against nothing; restores are never rate-limited, as in spec 001.
 - Tests that need a cluster run on the shared kind dev cluster
-  (`KUBE_CONTEXT=kind-fathom-dev`), never on roanoke.
+  (`KUBE_CONTEXT=kind-dev`), never on the production cluster.

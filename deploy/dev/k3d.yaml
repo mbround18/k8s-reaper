@@ -6,7 +6,7 @@ metadata:
   name: k8s-reaper-dev # must match CLUSTER in the Makefile
 servers: 1
 agents: 1
-# Same k3s minor as roanoke (research.md R1). Docker tags use '-' for '+'.
+# Same k3s minor as the production cluster (research.md R1). Docker tags use '-' for '+'.
 image: rancher/k3s:v1.36.5-k3s1
 registries:
   create:

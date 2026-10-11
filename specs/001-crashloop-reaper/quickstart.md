@@ -96,12 +96,12 @@ make test-integration                   # all stories, needs Docker
 make test-integration STORY=us3_restore # one story
 ```
 
-## 6. On roanoke (after the chart and HelmRelease land, report mode)
+## 6. On the production cluster (after the chart and HelmRelease land, report mode)
 
 ```bash
 kubectl get deploy,sts,ds,cronjob -A -l reaper.boop.ninja/state=candidate
 ```
 
-Expected (SC-006): the six `slam-prod` Deployments and `fathom-dev/crashloop`.
-Not expected: the `slam-prod/ingest-*` Job pods or `fathom-dev/bad-image`. The
+Expected (SC-006): the six `shop-prod` Deployments and `sandbox/crashloop`.
+Not expected: the `shop-prod/ingest-*` Job pods or `sandbox/bad-image`. The
 `ingest` CronJob appears only if it has failed every run for 6 hours (US5).
