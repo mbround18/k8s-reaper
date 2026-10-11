@@ -524,8 +524,20 @@ fn restore_actions(
     }
     actions.push(Action::ClearReaperState {
         restore_reconcile: record.previous_reconcile.clone(),
+        last_counted_job: w.cron_job.as_ref().and_then(newest_failed_job),
     });
     actions
+}
+
+/// The most recent failed Job, which a restore marks as counted: the
+/// failing streak starts again from zero (spec.md US5 scenario 5).
+fn newest_failed_job(cron: &CronJobView) -> Option<String> {
+    cron.jobs
+        .iter()
+        .filter(|j| j.failed())
+        .filter_map(|j| Some((j.finished_at()?, &j.name)))
+        .max()
+        .map(|(_, name)| name.clone())
 }
 
 /// The steps of an interrupted reap that are not visible as done yet
@@ -1251,7 +1263,8 @@ mod tests {
             [
                 Action::ScaleTo { replicas: 3 },
                 Action::ClearReaperState {
-                    restore_reconcile: Some(PreviousReconcile::Absent)
+                    restore_reconcile: Some(PreviousReconcile::Absent),
+                    last_counted_job: None,
                 },
             ]
         );
@@ -1264,7 +1277,8 @@ mod tests {
         assert_eq!(
             actions,
             [Action::ClearReaperState {
-                restore_reconcile: None
+                restore_reconcile: None,
+                last_counted_job: None,
             }]
         );
     }
@@ -1277,7 +1291,8 @@ mod tests {
         assert_eq!(
             actions,
             [Action::ClearReaperState {
-                restore_reconcile: None
+                restore_reconcile: None,
+                last_counted_job: None,
             }]
         );
     }
@@ -1614,7 +1629,8 @@ mod tests {
             [
                 Action::ResumeCronJob,
                 Action::ClearReaperState {
-                    restore_reconcile: None
+                    restore_reconcile: None,
+                    last_counted_job: Some("ingest-2".into()),
                 }
             ]
         );
@@ -1630,7 +1646,8 @@ mod tests {
         assert_eq!(
             actions,
             [Action::ClearReaperState {
-                restore_reconcile: None
+                restore_reconcile: None,
+                last_counted_job: Some("ingest-2".into()),
             }]
         );
     }

@@ -24,9 +24,9 @@ use crate::ports::{
     WorkloadRow, WriteError,
 };
 use crate::record::{
-    FLUX_RECONCILE, FLUX_RECONCILE_DISABLED, HELMRELEASE, MetadataPatch, ORIGINAL_REPLICAS,
-    PREVIOUS_RECONCILE, PreviousReconcile, REAPED_AT, REASON, STATE_LABEL, State, WorkloadRecord,
-    is_owned_key,
+    FLUX_RECONCILE, FLUX_RECONCILE_DISABLED, HELMRELEASE, LAST_FAILED_JOB, MetadataPatch,
+    ORIGINAL_REPLICAS, PREVIOUS_RECONCILE, PreviousReconcile, REAPED_AT, REASON, STATE_LABEL,
+    State, WorkloadRecord, is_owned_key,
 };
 use crate::time::Timestamp;
 
@@ -523,7 +523,8 @@ impl<W: ClusterWriter, E: EventSink, T: Telemetry> Run<'_, W, E, T> {
                     matches!(
                         a,
                         Action::ClearReaperState {
-                            restore_reconcile: Some(_)
+                            restore_reconcile: Some(_),
+                            ..
                         }
                     )
                 }) {
@@ -562,10 +563,18 @@ impl<W: ClusterWriter, E: EventSink, T: Telemetry> Run<'_, W, E, T> {
                     .await?;
                 Ok(())
             }
-            Action::ClearReaperState { restore_reconcile } => {
+            Action::ClearReaperState {
+                restore_reconcile,
+                last_counted_job,
+            } => {
                 let mut patch = MetadataPatch::default();
                 for k in live.annotations.keys().filter(|k| is_owned_key(k)) {
                     patch.annotations.insert(k.clone(), None);
+                }
+                if let Some(job) = last_counted_job {
+                    patch
+                        .annotations
+                        .insert(LAST_FAILED_JOB.to_owned(), Some(job.clone()));
                 }
                 if let Some(previous) = restore_reconcile {
                     let restored = previous.restored_value();
@@ -599,6 +608,7 @@ fn step_kind(action: &Action) -> Option<ActionKind> {
         Action::ResumeCronJob => Some(ActionKind::CronJobResume),
         Action::ClearReaperState {
             restore_reconcile: Some(_),
+            ..
         } => Some(ActionKind::KustomizeRestore),
         // Releases are counted where the patch is written, so stale holds
         // count too.
@@ -1499,7 +1509,11 @@ mod tests {
                 suspend: false,
             }
         );
-        assert_eq!(patch(&calls[1]).labels[STATE_LABEL], None);
+        let p = patch(&calls[1]);
+        assert_eq!(p.labels[STATE_LABEL], None);
+        assert_eq!(p.annotations[FAILING_SINCE], None);
+        // Kept, so failures from before the restore are not counted again.
+        assert_eq!(p.annotations[LAST_FAILED_JOB].as_deref(), Some("ingest-2"));
         assert_eq!(r.events.reasons(), ["Restored"]);
         let note = r.events.events.lock().unwrap()[0].note.clone();
         assert_eq!(note, "requested; CronJob resumed");

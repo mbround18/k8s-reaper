@@ -44,9 +44,13 @@ pub enum Action {
     },
     ResumeCronJob,
     /// Delete every owned annotation and the state label, putting the Flux
-    /// reconcile annotation back when the reaper had changed it.
+    /// reconcile annotation back when the reaper had changed it. On a
+    /// CronJob, `last-failed-job` is set to `last_counted_job` instead, so
+    /// the failing streak starts again after the restore.
     ClearReaperState {
         restore_reconcile: Option<PreviousReconcile>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_counted_job: Option<String>,
     },
 }
 
@@ -388,6 +392,7 @@ mod tests {
             Action::ScaleTo { replicas: 2 },
             Action::ClearReaperState {
                 restore_reconcile: Some(PreviousReconcile::Value("enabled".into())),
+                last_counted_job: None,
             },
         ];
         insta::assert_snapshot!(serde_json::to_string(&restore).unwrap(), @r#"[{"releaseHelmRelease":{"helmRelease":"helm/web","resume":true,"restoreReconcile":"<none>"}},{"scaleTo":{"replicas":2}},{"clearReaperState":{"restoreReconcile":"enabled"}}]"#);

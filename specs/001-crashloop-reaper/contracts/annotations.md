@@ -32,7 +32,7 @@ CronJob-only keys (US5). On a CronJob, `crashloop-since`, `healthy-since` and
 | ------------------------------------ | ------ | -------------------------- | --------------------------------------------------------------------------------------- |
 | `reaper.boop.ninja/failing-since`     | reaper | state `observed` onward    | RFC 3339 UTC: completion time of the first failed Job after the last success            |
 | `reaper.boop.ninja/failed-runs`       | reaper | state `observed` onward    | Decimal count of distinct failed Jobs seen in the streak                                |
-| `reaper.boop.ninja/last-failed-job`   | reaper | state `observed` onward    | Name of the last failed Job counted, so a Job is never counted twice                    |
+| `reaper.boop.ninja/last-failed-job`   | reaper | state `observed` onward; kept after a restore | Name of the last failed Job counted, so a Job is never counted twice. A restore sets it to the newest failed Job, so the streak starts again from zero |
 
 On a CronJob, `reason` reads, for example:
 `7 failed runs since 2026-10-10T02:00:00Z, last job "ingest-29340000" failed (BackoffLimitExceeded)`.
@@ -71,5 +71,8 @@ When a restore runs, the reaper:
 3. On the workload, puts `kustomize.toolkit.fluxcd.io/reconcile` back to
    `previous-reconcile` (deleting it if `<none>`), and deletes every
    `reaper.boop.ninja/*` annotation (including `restore`) and the state label.
+   On a CronJob, `last-failed-job` is instead set to the newest failed Job, so
+   only failures after the restore count towards a new streak (spec.md US5
+   scenario 5).
 
 Annotations the reaper did not write are never changed.

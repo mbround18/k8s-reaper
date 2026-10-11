@@ -128,7 +128,8 @@ pub fn group_pods<'a>(
 /// A CronJob's recent runs as the reaper reads them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobStreak {
-    /// No finished Job to judge by: the record stays as it is.
+    /// No finished Job to judge by, or none failed since the last one
+    /// counted before a restore: the record stays as it is.
     Unknown,
     /// The most recent finished Job succeeded.
     Passing,
@@ -188,7 +189,17 @@ pub fn job_streak(cron: &CronJobView, record: &WorkloadRecord) -> JobStreak {
             let new = seen.map_or(&failed[..], |i| &failed[i + 1..]);
             (since, record.failed_runs.unwrap_or(0), new)
         }
-        None => (*first_at, 0, &failed[..]),
+        // After a restore only `last-failed-job` is left: the streak starts
+        // with the first failure after it.
+        None => match record
+            .last_failed_job
+            .as_deref()
+            .and_then(|name| failed.iter().position(|(_, j)| j.name == name))
+        {
+            Some(i) if i + 1 == failed.len() => return JobStreak::Unknown,
+            Some(i) => (failed[i + 1].0, 0, &failed[i + 1..]),
+            None => (*first_at, 0, &failed[..]),
+        },
     };
     let new = u32::try_from(new.len()).unwrap_or(u32::MAX);
     JobStreak::Failing(Streak {
@@ -489,6 +500,26 @@ mod tests {
         c.last_successful_time = Some(mins_ago(15));
         let s = failing(job_streak(&c, &recorded(300, 7, "j-7")));
         assert_eq!((s.since, s.failed_runs), (mins_ago(10), 1));
+    }
+
+    #[test]
+    fn after_a_restore_only_jobs_after_the_last_counted_one_count() {
+        // A restore leaves only `last-failed-job`: the streak starts again.
+        let c = cron(vec![
+            failed_job("j-1", 400),
+            failed_job("j-2", 300),
+            failed_job("j-3", 20),
+        ]);
+        let restored = WorkloadRecord {
+            last_failed_job: Some("j-2".into()),
+            ..WorkloadRecord::default()
+        };
+        let s = failing(job_streak(&c, &restored));
+        assert_eq!((s.since, s.failed_runs), (mins_ago(20), 1));
+        assert_eq!(s.last_failed_job, "j-3");
+
+        let quiet = cron(vec![failed_job("j-1", 400), failed_job("j-2", 300)]);
+        assert_eq!(job_streak(&quiet, &restored), JobStreak::Unknown);
     }
 
     #[test]
