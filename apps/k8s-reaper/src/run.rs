@@ -48,11 +48,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         .context("--namespace / REAPER_NAMESPACE is required")?;
 
     let mut registry = Registry::default();
-    let metrics = Arc::new(Metrics::register(
-        &mut registry,
-        env!("CARGO_PKG_VERSION"),
-        GIT_SHA,
-    ));
+    let metrics = register_metrics(&mut registry);
     let health = Health::new();
 
     let (stop_tx, stop) = watch::channel(false);
@@ -154,6 +150,17 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     drop(caches);
     let _ = server.await;
     Ok(())
+}
+
+/// Registers the metrics. Now is the process start, which
+/// `reaper_last_cycle_timestamp_seconds` reads until the first cycle ends.
+fn register_metrics(registry: &mut Registry) -> Arc<Metrics> {
+    Arc::new(Metrics::register(
+        registry,
+        env!("CARGO_PKG_VERSION"),
+        GIT_SHA,
+        SystemTime::now(),
+    ))
 }
 
 /// The shortest time between the starts of two cycles when a watched change

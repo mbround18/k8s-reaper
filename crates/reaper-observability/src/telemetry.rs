@@ -6,7 +6,7 @@
 //! `_` and no `_total`.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,11 +14,12 @@ use opentelemetry::KeyValue;
 use opentelemetry::metrics::{
     Counter as OtelCounter, Gauge as OtelGauge, Histogram as OtelHistogram, ObservableGauge,
 };
-use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::encoding::{EncodeLabelSet, EncodeMetric, MetricEncoder};
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::{Histogram, exponential_buckets};
+use prometheus_client::metrics::{MetricType, TypedMetric};
 use prometheus_client::registry::{Registry, Unit};
 use reaper_core::config::Mode;
 use reaper_core::plan::UnsupportedPod;
@@ -283,6 +284,48 @@ impl Otel {
     }
 }
 
+/// A label-less gauge with no sample until it is first set. A `Family` with
+/// an empty label set would render `name{} 1`; this renders `name 1`.
+#[derive(Debug, Clone, Default)]
+struct UnsetGauge {
+    gauge: Gauge,
+    set: Arc<AtomicBool>,
+}
+
+impl UnsetGauge {
+    fn set(&self, value: i64) {
+        self.gauge.set(value);
+        self.set.store(true, Ordering::Release);
+    }
+}
+
+impl TypedMetric for UnsetGauge {
+    const TYPE: MetricType = MetricType::Gauge;
+}
+
+impl EncodeMetric for UnsetGauge {
+    fn encode(&self, encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        self.gauge.encode(encoder)
+    }
+
+    fn metric_type(&self) -> MetricType {
+        Self::TYPE
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.set.load(Ordering::Acquire)
+    }
+}
+
+fn unix_seconds(t: SystemTime) -> f64 {
+    t.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 /// Every contracted metric, registered once into a [`Registry`].
 pub struct Metrics {
     workload_state: Family<StateLabels, Gauge>,
@@ -293,7 +336,8 @@ pub struct Metrics {
     cycle_duration: Histogram,
     last_cycle: Gauge<f64, AtomicU64>,
     config_info: Family<ConfigLabels, Gauge>,
-    config_valid: Gauge,
+    /// Absent until the first config read.
+    config_valid: UnsetGauge,
     notifications: Family<NotificationLabels, Counter>,
     notification_channels: Family<ChannelLabels, Gauge>,
     /// The last `notification_channels` rows, read by the `OTel` callback.
@@ -310,7 +354,16 @@ pub struct Metrics {
 
 impl Metrics {
     /// Registers every metric into `registry` and sets `reaper_build_info`.
-    pub fn register(registry: &mut Registry, version: &str, git_sha: &str) -> Self {
+    ///
+    /// `started` is the process start: `reaper_last_cycle_timestamp_seconds`
+    /// reads it until the first cycle finishes, so `ReaperStalled` cannot
+    /// fire while the caches sync.
+    pub fn register(
+        registry: &mut Registry,
+        version: &str,
+        git_sha: &str,
+        started: SystemTime,
+    ) -> Self {
         let rows = Arc::new(Mutex::new(Vec::new()));
         let channels = Arc::new(Mutex::new(Vec::new()));
         let unowned = Arc::new(Mutex::new(BTreeMap::new()));
@@ -323,7 +376,7 @@ impl Metrics {
             cycle_duration: Histogram::new(exponential_buckets(0.05, 2.0, 12)),
             last_cycle: Gauge::default(),
             config_info: Family::default(),
-            config_valid: Gauge::default(),
+            config_valid: UnsetGauge::default(),
             notifications: Family::default(),
             notification_channels: Family::default(),
             emitted: Mutex::default(),
@@ -333,6 +386,7 @@ impl Metrics {
             channels,
             unowned,
         };
+        metrics.last_cycle.set(unix_seconds(started));
         let build_info = Family::<BuildLabels, Gauge>::default();
         build_info
             .get_or_create(&BuildLabels {
@@ -405,10 +459,7 @@ impl Metrics {
     /// Records a finished cycle: its result, duration and finish time.
     pub fn cycle(&self, result: CycleResult, duration: Duration, finished: SystemTime) {
         let secs = duration.as_secs_f64();
-        let at = finished
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
+        let at = unix_seconds(finished);
         self.cycles
             .get_or_create(&CycleLabels {
                 result: result.as_str(),
@@ -689,10 +740,80 @@ mod tests {
         }
     }
 
+    /// The process start used by the tests: 2026-01-01T00:00:00Z.
+    const START: u32 = 1_767_225_600;
+
+    fn started() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(u64::from(START))
+    }
+
     fn metrics() -> (Registry, Metrics) {
         let mut registry = Registry::default();
-        let metrics = Metrics::register(&mut registry, "0.1.0", "abc123");
+        let metrics = Metrics::register(&mut registry, "0.1.0", "abc123", started());
         (registry, metrics)
+    }
+
+    /// The value of the label-less sample `name`, if the text has one.
+    fn sample(body: &str, name: &str) -> Option<f64> {
+        body.lines()
+            .filter(|l| !l.starts_with('#'))
+            .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+            .map(|v| v.trim().parse().unwrap())
+    }
+
+    #[test]
+    fn startup_values_are_the_start_time_and_no_config_valid() {
+        let (registry, metrics) = metrics();
+        let body = encode(&registry);
+        assert_eq!(
+            sample(&body, "reaper_last_cycle_timestamp_seconds"),
+            Some(f64::from(START)),
+            "{body}"
+        );
+        assert!(
+            !body.lines().any(|l| l.starts_with("reaper_config_valid")),
+            "{body}"
+        );
+
+        metrics.config_valid(true);
+        let body = encode(&registry);
+        assert_eq!(sample(&body, "reaper_config_valid"), Some(1.0), "{body}");
+        metrics.config_valid(false);
+        let body = encode(&registry);
+        assert_eq!(sample(&body, "reaper_config_valid"), Some(0.0), "{body}");
+    }
+
+    /// SC-003: the `ReaperStalled` and `ReaperConfigInvalid` expressions,
+    /// evaluated against the start-up exposition five minutes after start
+    /// (cache sync still pending, no cycle and no config read yet).
+    #[test]
+    fn startup_series_do_not_alert() {
+        let (registry, _metrics) = metrics();
+        let body = encode(&registry);
+        let now = f64::from(START + 300);
+
+        // ReaperStalled: time() - reaper_last_cycle_timestamp_seconds > 600.
+        // An absent series yields no result, so no alert.
+        let stalled =
+            sample(&body, "reaper_last_cycle_timestamp_seconds").is_some_and(|ts| now - ts > 600.0);
+        assert!(!stalled, "{body}");
+
+        // ReaperConfigInvalid: reaper_config_valid == 0.
+        let invalid = sample(&body, "reaper_config_valid").is_some_and(|v| v == 0.0);
+        assert!(!invalid, "{body}");
+    }
+
+    #[test]
+    fn a_failed_record_write_renders_as_the_record_action() {
+        let (registry, metrics) = metrics();
+        metrics.action(ActionKind::Record, ActionResult::Error, Mode::Report);
+        let body = encode(&registry);
+        assert!(
+            body.contains(
+                "reaper_actions_total{action=\"record\",result=\"error\",mode=\"report\"} 1"
+            ),
+            "{body}"
+        );
     }
 
     #[test]
