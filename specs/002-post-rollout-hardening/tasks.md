@@ -169,7 +169,7 @@ namespace leaving scope, both restore.
   - it restores the dev ReaperConfig in a drop guard.
 
   Use `kubectl`-free kube API calls, as us3_restore does.
-- [ ] T141 [US3] Docs:
+- [X] T141 [US3] Docs:
   - in `docs/guides/flux.md` and `docs/guides/restoring-a-workload.md`: a manual `flux resume` now counts as a restore;
   - in `docs/guides/configuration.md` and `docs/guides/how-it-works.md`: excluding a namespace restores its reaped workloads; remove the "restore before excluding" advice;
   - in `docs/guides/troubleshooting.md`: remove the two "documented but unhandled" entries;

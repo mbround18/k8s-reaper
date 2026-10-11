@@ -166,17 +166,23 @@ reaped workload until it is restored.
 
 The reaper never suspends or resumes a Kustomization either.
 
-## 7. Do not resume Flux by hand
+## 7. Resuming Flux by hand
 
-The reaper notices a restore only through the workload: the restore
-annotation, replicas above 0, or a CronJob that is no longer suspended. It
-does not notice changes to Flux.
+The reaper notices a restore through the workload (the restore annotation,
+replicas above 0, or a CronJob that is no longer suspended) and through a
+HelmRelease it suspended being resumed.
 
-- **`flux resume helmrelease`** resumes the release, but the workload stays
-  `reaped` and is still listed in `held-for`. The reaper does not suspend it
-  again. If helm-controller then scales the workload back up, the reaper
-  sees a manual scale-up and clears its state. If not, the workload stays at
-  0 and marked reaped until you restore it.
+- **`flux resume helmrelease`** on a release the reaper suspended
+  (`suspended-by-reaper: true`) counts as a restore. On its next cycle the
+  reaper restores every reaped workload held through that release, each
+  with a `Restored` Event noted `manual-resume`, and then lets the release go
+  with `HelmReleaseReleased`. It does not suspend or resume the release
+  itself again. Resuming a release that was already suspended before the
+  reaper held it (`suspended-by-reaper: false`) is not a restore.
+
+  The reaper looks at the release once per cycle. A release resumed and then
+  suspended again before the next cycle looks unchanged, so it is not seen
+  as resumed, and its workloads stay reaped.
 - **Removing `kustomize.toolkit.fluxcd.io/reconcile` by hand** lets
   kustomize-controller apply the workload again. If the manifest in Git sets
   `replicas`, that counts as a manual scale-up. If it does not, the workload

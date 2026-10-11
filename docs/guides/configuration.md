@@ -99,10 +99,12 @@ matches `slam-prod` but not `slam`.
 - **Exclude wins.** A namespace that matches both lists is excluded.
 - **The reaper's own namespace is always excluded**, whatever the lists say.
 - Entries must not be empty strings.
-- **Excluding a namespace does not restore anything in it.** The reaper stops
-  looking, so a workload it has already reaped there stays at zero. Restore it
-  before you exclude the namespace, or use `reaper.boop.ninja/mode: off`
-  instead, which restores first ([section 4](#4-per-namespace-and-per-workload-settings)).
+- **Excluding a namespace restores what the reaper reaped there.** On its
+  next cycle the reaper restores each workload it has reaped (or started to
+  reap) in a namespace that left scope, with a `Restored` Event noted
+  `opted-out`, and then stops looking at the namespace. Removing a namespace
+  from `includeNamespaces` does the same. This happens in report mode too, but
+  not while the global mode is `off`.
 
 ### `limits`
 
@@ -318,9 +320,9 @@ spec:
       - "slam-*"
 ```
 
-Restore anything already reaped in `slam-*` before you exclude it. An
-excluded namespace is no longer looked at, so the reaper will not restore it
-for you.
+Anything already reaped in `slam-*` is restored on the next cycle, with a
+`Restored` Event noted `opted-out`; after that the namespaces are not looked
+at.
 
 **Let one tenant stay report-only.** No change to the ReaperConfig; the
 tenant labels its own namespace:

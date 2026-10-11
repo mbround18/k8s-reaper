@@ -220,8 +220,10 @@ chart's copy.
   series, not one Event per cycle; the failed-action counter still counts
   every attempt.
 - A HelmRelease the reaper suspended is resumed and immediately suspended
-  again by someone else: the reaper restores its workloads and does not treat
-  the new suspend as its own hold.
+  again by someone else: if a cycle saw it resumed, the reaper restores its
+  workloads and does not treat the new suspend as its own hold. A resume and
+  re-suspend that both happen between two cycles is not a restore (not
+  detected: the reaper sees the release once per cycle).
 - A HelmRelease was already suspended by someone else before the reap: the
   reaper did not record a suspend, so resuming it is not a restore.
 - A namespace is excluded and then included again before the next cycle:

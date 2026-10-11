@@ -126,8 +126,10 @@ How state is cleared (the `[*]` on the right):
 - **Recovered.** Healthy for `recoveryWindow` from `observed` or `candidate`.
   Event `CrashLoopRecovered`.
 - **Restored.** From `reaped`: the restore annotation, a manual scale-up, a
-  manual CronJob resume, or `reaper.boop.ninja/mode=off`. From `reaping`: the
-  restore annotation or `mode=off`. Event `Restored`. See
+  manual CronJob resume, resuming a HelmRelease the reaper suspended,
+  `reaper.boop.ninja/mode=off`, or the namespace leaving scope. From
+  `reaping`: the restore annotation, `mode=off`, or the namespace leaving
+  scope. Event `Restored`. See
   [restoring a workload](restoring-a-workload.md).
 - **Forgotten.** From `observed` or `candidate`, without an Event: the
   workload was scaled to 0 by someone else, opted out with `mode=off`, or
@@ -243,9 +245,10 @@ Entries are names or globs (`slam-*`). A namespace that matches both lists is
 excluded. Setting a list replaces its default; see
 [configuration](configuration.md#scope).
 
-Out of scope means not looked at at all: no state, no Events, and no restore.
-A workload already reaped in a namespace you then exclude stays at 0 until
-you restore it. Restore first, then exclude.
+Out of scope means not looked at: no state and no Events, with one
+exception. A workload the reaper reaped, or started to reap, in a namespace
+that then leaves scope is restored on the next cycle, with a `Restored` Event
+noted `opted-out`. After that the namespace is left alone.
 
 ## 8. Mode: report, full and the mode label
 
@@ -347,7 +350,7 @@ it has acted on it.
 - It never changes an annotation or label it did not write, apart from the
   Flux reconcile annotation, whose earlier value it records and puts back.
 - It never acts on its own namespace, an excluded namespace, or a workload
-  with `mode=off`.
+  with `mode=off`, except to undo its own earlier reap there.
 - It never reads Secrets through the Kubernetes API. Notification URLs come
   from mounted files, see [notifications](notifications.md).
 - In report mode, it never changes replicas, Flux objects or CronJobs, except

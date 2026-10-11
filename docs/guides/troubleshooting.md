@@ -193,8 +193,8 @@ kubectl events -n shop --for deploy/api
 | --------------------------- | ------- |
 | `requested` | Someone set `reaper.boop.ninja/restore`. |
 | `manual-scale-up` | Someone or something set `replicas` above 0. |
-| `manual-resume` | Someone or something set `spec.suspend: false` on the CronJob. |
-| `opted-out` | Someone labelled it `reaper.boop.ninja/mode=off`. |
+| `manual-resume` | Someone or something set `spec.suspend: false` on the CronJob, or resumed the HelmRelease the reaper suspended. |
+| `opted-out` | Someone labelled it `reaper.boop.ninja/mode=off`, or its namespace left scope. |
 
 To see which client changed the replicas, look at the managed fields:
 
@@ -217,14 +217,6 @@ kubectl get deploy -n shop api -o yaml --show-managed-fields | grep -B3 -A10 'f:
 - **Another GitOps tool** (for example Argo CD with self-heal). The reaper
   only knows how to hold Flux off. Label such workloads
   `reaper.boop.ninja/mode=report`.
-- **`flux resume` by hand.** This is not a restore, and the reaper records
-  nothing. Resuming a Kustomization does not lift the per-workload
-  `reconcile: disabled` annotation, so the workload stays down. Resuming a
-  HelmRelease lets helm-controller act on the release again; if that brings
-  the replicas back, the reaper sees a scale-up and finishes the restore
-  (`manual-scale-up`). If not, the workload stays at 0 and still holds the
-  HelmRelease in `held-for`. Use the restore annotation instead
-  ([restoring-a-workload.md](restoring-a-workload.md#5-fix-the-cause-with-flux)).
 
 ## Restoring
 
@@ -243,9 +235,6 @@ You set `reaper.boop.ninja/restore`, and nothing changed.
 - **The annotation is on the wrong object.** It must be on the Deployment,
   StatefulSet or CronJob's own metadata, not the pod template, a ReplicaSet,
   a pod, or the HelmRelease.
-- **The namespace is out of scope now.** An excluded namespace is not looked
-  at, restore requests included. Put it back in scope, restore, then exclude
-  it.
 - **The reaper is not running cycles.** The annotation stays in place until
   it does. See [`/readyz` returns 503](#readyz-returns-503).
 - **The HelmRelease is still suspended.** It stays suspended until every

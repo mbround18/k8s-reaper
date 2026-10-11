@@ -167,9 +167,21 @@ safe: after a restore the reaper starts watching the workload from scratch, and
 the full `crashLoopDuration` must pass before it can be reaped again
 (section 7).
 
-Use the restore annotation, not `flux resume`, and do not remove the reconcile
-annotation by hand. The reaper's records are only cleared, and a shared
-HelmRelease's hold only released, when the workload itself is restored.
+Resuming a HelmRelease the reaper suspended also counts as a restore:
+
+```sh
+flux resume helmrelease <name> -n <namespace>
+```
+
+On its next cycle the reaper restores every reaped workload held through that
+release (section 6), each with a `Restored` Event whose note starts with
+`manual-resume`, and then releases the HelmRelease. Resuming a release that
+was suspended before the reaper held it is not a restore. The reaper looks at
+the release once per cycle, so a release resumed and suspended again before
+the next cycle is not noticed.
+
+Do not remove the reconcile annotation by hand. Use the restore annotation, a
+scale-up or `flux resume helmrelease` instead.
 
 ## 6. Shared HelmReleases
 
@@ -212,6 +224,9 @@ To release the HelmRelease, restore each workload listed:
 kubectl annotate deployment/api -n shop reaper.boop.ninja/restore=now --overwrite
 kubectl annotate deployment/worker -n shop reaper.boop.ninja/restore=now --overwrite
 ```
+
+Or resume the HelmRelease (section 5), which restores every workload listed in
+one cycle.
 
 If a workload in `held-for` is deleted, or is recreated without the reaper's
 annotations, the reaper removes it from the list on its next cycle. It resumes

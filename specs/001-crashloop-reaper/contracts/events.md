@@ -11,7 +11,7 @@ API `events.k8s.io/v1`. `reportingController: reaper.boop.ninja/k8s-reaper`.
 | `ReapSkipped`        | Warning | workload                 | `Plan`       | candidate with a skip reason, or a new skip reason. Note: `reason=<SkipReason>; would: …`   |
 | `Reaped`             | Warning | workload                 | `ScaleDown`  | → `reaped`. Note: original replicas (or `suspended` for a CronJob), reason, Flux holds placed |
 | `ReapFailed`         | Warning | workload                 | `ScaleDown`  | a reap step failed (API error, conflict). Retried next cycle                                |
-| `Restored`           | Normal  | workload                 | `Restore`    | restore finished. Note: `requested`, `manual-scale-up` or `manual-resume`, replicas, Flux holds released     |
+| `Restored`           | Normal  | workload                 | `Restore`    | restore finished. Note: a restore note (see [Restore notes](#restore-notes)), replicas, Flux holds released |
 | `RestoreFailed`      | Warning | workload                 | `Restore`    | a restore step failed. Retried next cycle                                                   |
 | `RestoreIgnored`     | Normal  | workload                 | `Restore`    | `restore` annotation on a workload the reaper holds no reap for                             |
 | `CrashLoopRecovered` | Normal  | workload                 | `Recover`    | observed/candidate → none after `recoveryWindow` healthy                                    |
@@ -21,6 +21,18 @@ API `events.k8s.io/v1`. `reportingController: reaper.boop.ninja/k8s-reaper`.
 | `HelmReleaseReleased`| Normal  | HelmRelease              | `Resume`     | `held-for` became empty                                                                     |
 | `ConfigInvalid`      | Warning | ReaperConfig (or object) | `Validate`   | config, or a mode label value, failed validation; last valid config is kept                |
 | `ConfigApplied`      | Normal  | ReaperConfig             | `Validate`   | a new config generation became active                                                      |
+
+## Restore notes
+
+The note of a `Restored` Event starts with one of these values. The same
+string is the `RestoreKind`.
+
+| Note              | When                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| `requested`       | `reaper.boop.ninja/restore=true` on the workload                                       |
+| `manual-scale-up` | someone scaled a reaped Deployment or StatefulSet above zero                           |
+| `manual-resume`   | someone resumed a reaped CronJob, or the HelmRelease the reaper suspended for it       |
+| `opted-out`       | `mode=off` on the workload or namespace, or its namespace left the reaper's scope      |
 
 A repeat of the same object, reason, action, type and note within 6 minutes
 continues that Event's `series`; a different note is always a new Event, so the
