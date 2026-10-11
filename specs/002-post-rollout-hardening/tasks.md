@@ -218,11 +218,13 @@ a guarded `ReaperDown` and a regenerable CRD.
 
 ## Phase 8: Polish & cross-cutting
 
-- [ ] T150 `make test`, `make lint` and `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings` are all green; `cargo bench -p reaper-core --bench decide` still passes. Record the test count.
+- [X] T150 `make test`, `make lint` and `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-D warnings` are all green; `cargo bench -p reaper-core --bench decide` still passes. Record the test count.
+  - 2026-10-11 at `9a859b8`: 297 passed, 0 failed, 9 ignored (dev-cluster stories); lint and strict `cargo doc` clean; bench median 0.18 ms, p99 0.36 ms over 200 runs.
 - [ ] T151 Run the integration suite on kind with `KUBE_CONTEXT=kind-fathom-dev`: `make image dev-load dev-run`, then `STORY=us7_health`, `STORY=us8_letting_go`, and a regression run of `us1_report` and `us3_restore`. Record the results here.
 - [ ] T152 Run the start-up loop in quickstart §2 (20 restarts) and §3 (deny patch) on kind, and record the outcome against SC-003 and SC-004.
-- [ ] T153 Run a link check over `README.md`, `CONTRIBUTING.md` and `docs/guides/*.md`. Grep the guides for `OptedOut`, `UnsupportedOwner`, `NotReady` and "restore before excluding"; there should be no matches.
-- [ ] T154 Tick G19–G31 in `specs/001-crashloop-reaper/tasks.md`, each pointing at the 002 task that closed it.
+- [X] T153 Run a link check over `README.md`, `CONTRIBUTING.md` and `docs/guides/*.md`. Grep the guides for `OptedOut`, `UnsupportedOwner`, `NotReady` and "restore before excluding"; there should be no matches.
+  - 2026-10-11: no broken relative links or anchors in 14 files (external URLs not checked); no stale terms.
+- [X] T154 Tick G19–G31 in `specs/001-crashloop-reaper/tasks.md`, each pointing at the 002 task that closed it.
 
 ## Dependencies
 
