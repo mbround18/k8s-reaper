@@ -199,8 +199,8 @@ thresholds; SC-008.
   - testing tiers, `make` targets, release process;
   - signed commits.
 - [X] T071 [P] Write `docs/guides/getting-started.md` (install via Flux HelmRelease, stay in report mode, read the reports, flip to full)
-- [ ] T072 [P] Write `docs/guides/restoring-a-workload.md`: the one restore command, manual scale-up, manual CronJob resume, "restore then fix" with Flux, shared HelmReleases
-- [ ] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field (including `cronJobs`), opt-out labels, examples for `slam-*`
+- [x] T072 [P] Write `docs/guides/restoring-a-workload.md`: the one restore command, manual scale-up, manual CronJob resume, "restore then fix" with Flux, shared HelmReleases
+- [x] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field (including `cronJobs`), opt-out labels, examples for `slam-*`
 - [X] T074 Measure memory and cycle time against the plan's goals (< 64 MiB, < 1 s for 300 pods) with a synthetic snapshot benchmark in `crates/reaper-core/benches/decide.rs`
 - [ ] T075 Run quickstart.md end to end on k3d and tick SC-001 to SC-005, SC-007, SC-008
 - [ ] T076 Chart PR in `mbround18/helm-charts` (`charts/k8s-reaper`): CRD from `k8s-reaper crd`, Deployment (Recreate, 1 replica, non-root, read-only fs), RBAC per contracts/config.md, Service, ServiceMonitor, PrometheusRule per contracts/metrics.md, `ReaperConfig/default` from values (`mode: report`), notifications Secret mount (`notifications.secretName`, `optional: true`, see docs/guides/notifications.md). (Outside this repo.)

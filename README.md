@@ -14,9 +14,19 @@ stops restarting every five minutes forever and a human gets told.
 
 ## Status
 
-**Specification only.** There is no code yet. The MVP is specified in
-[`specs/001-crashloop-reaper/`](specs/001-crashloop-reaper/spec.md) using
-[spec-kit](https://github.com/github/spec-kit).
+All six user stories are built and pass on a dev cluster: report, reap with
+Flux held off, one-step restore, runtime config, CronJobs, and notifications.
+The Helm chart is not published yet. The design lives in
+[`specs/001-crashloop-reaper/`](specs/001-crashloop-reaper/spec.md).
+
+## Guides
+
+- [Getting started](docs/guides/getting-started.md)
+- [Configuration](docs/guides/configuration.md)
+- [Restoring a workload](docs/guides/restoring-a-workload.md)
+- [Notifications](docs/guides/notifications.md)
+
+Building or changing the reaper: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
