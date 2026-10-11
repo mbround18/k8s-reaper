@@ -203,7 +203,7 @@ thresholds; SC-008.
 - [ ] T073 [P] Write `docs/guides/configuration.md`: every ReaperConfig field (including `cronJobs`), opt-out labels, examples for `slam-*`
 - [ ] T074 Measure memory and cycle time against the plan's goals (< 64 MiB, < 1 s for 300 pods) with a synthetic snapshot benchmark in `crates/reaper-core/benches/decide.rs`
 - [ ] T075 Run quickstart.md end to end on k3d and tick SC-001 to SC-005, SC-007, SC-008
-- [ ] T076 Chart PR in `mbround18/helm-charts` (`charts/k8s-reaper`): CRD from `k8s-reaper crd`, Deployment (Recreate, 1 replica, non-root, read-only fs), RBAC per contracts/config.md, Service, ServiceMonitor, PrometheusRule per contracts/metrics.md, `ReaperConfig/default` from values (`mode: report`). (Outside this repo.)
+- [ ] T076 Chart PR in `mbround18/helm-charts` (`charts/k8s-reaper`): CRD from `k8s-reaper crd`, Deployment (Recreate, 1 replica, non-root, read-only fs), RBAC per contracts/config.md, Service, ServiceMonitor, PrometheusRule per contracts/metrics.md, `ReaperConfig/default` from values (`mode: report`), notifications Secret mount (`notifications.secretName`, `optional: true`, see docs/guides/notifications.md). (Outside this repo.)
 - [ ] T077 Fluxified overlay `overlays/services/k8s-reaper/` (namespace, HelmRelease → `charts/k8s-reaper`), then `uv run invoke build test`; deploy in report mode and check SC-006. (Outside this repo, after T076 is merged to the chart repo's `main`.)
 
 ## Phase 9: User Story 6 — notifications to Discord, webhooks and mail (P3)
@@ -230,7 +230,7 @@ mounted Secret, `ReapPlanned` opt-in).
 - [X] T096 [US6] Add `reaper_notifications_total` and `reaper_notification_channels` to `crates/reaper-observability/src/telemetry.rs` and the exposition test
 - [X] T097 [US6] Wire `--notifications-dir` / `REAPER_NOTIFICATIONS_DIR` and the worker into `apps/k8s-reaper/src/main.rs`; graceful shutdown drains the queue for at most 5 s
 - [X] T098 [US6] Dev: echo server and mail catcher in `deploy/dev/notify/` (e.g. a small HTTP echo and Mailpit), a sample Secret using `example.test` hosts, and integration test `apps/k8s-reaper/tests/us6_notify.rs` (`#[ignore]`) for SC-009 (mounting the Secret into the reaper waits on G02, `deploy/dev/reaper.yaml`)
-- [ ] T099 [P] [US6] `docs/guides/notifications.md`: creating the Secret, one example per provider, choosing reasons; and chart values (Secret name, `optional: true` mount) noted for T076
+- [X] T099 [P] [US6] `docs/guides/notifications.md`: creating the Secret, one example per provider, choosing reasons; and chart values (Secret name, `optional: true` mount) noted for T076
 
 **Checkpoint**: SC-009 passes on k3d.
 
