@@ -1,12 +1,14 @@
 //! Log and trace setup (contracts/config.md, `--log-format` and `OTel` env).
 //!
 //! Logs go to stdout as JSON or text, filtered by `RUST_LOG` (default `info`).
-//! When an OTLP endpoint is configured, spans are also exported over OTLP/HTTP.
+//! When an OTLP endpoint is configured, spans are also exported over OTLP/HTTP,
+//! and a global meter provider exports the metrics mirrored in `telemetry`.
 
 use std::str::FromStr;
 
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -40,28 +42,33 @@ impl FromStr for LogFormat {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    #[error("building the OTLP span exporter: {0}")]
+    #[error("building an OTLP exporter: {0}")]
     Exporter(#[from] opentelemetry_otlp::ExporterBuildError),
     #[error("installing the global subscriber: {0}")]
     Subscriber(#[from] tracing_subscriber::util::TryInitError),
 }
 
-/// Keeps the OTLP pipeline alive; dropping it flushes and shuts it down.
+/// Keeps the OTLP pipelines alive; dropping it flushes and shuts them down.
 #[derive(Debug)]
 pub struct TracingGuard {
     provider: Option<SdkTracerProvider>,
+    meter_provider: Option<SdkMeterProvider>,
 }
 
 impl Drop for TracingGuard {
     fn drop(&mut self) {
+        // Nothing useful can be done with a failed flush at exit.
         if let Some(provider) = self.provider.take() {
-            // Nothing useful can be done with a failed flush at exit.
+            let _ = provider.shutdown();
+        }
+        if let Some(provider) = self.meter_provider.take() {
             let _ = provider.shutdown();
         }
     }
 }
 
-/// Installs the global subscriber. Call once, early in `main`.
+/// Installs the global subscriber and, with an OTLP endpoint, the global
+/// meter provider. Call once, early in `main`, before any meter is built.
 ///
 /// # Errors
 ///
@@ -75,20 +82,29 @@ pub fn init(format: LogFormat) -> Result<TracingGuard, InitError> {
         LogFormat::Text => tracing_subscriber::fmt::layer().boxed(),
     };
 
-    let provider = if otlp_enabled(env) {
+    let provider = if otlp_enabled(env, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
             .build()?;
-        let mut resource = Resource::builder();
-        if needs_default_service_name(env) {
-            resource = resource.with_service_name(SERVICE_NAME);
-        }
         Some(
             SdkTracerProvider::builder()
-                .with_resource(resource.build())
+                .with_resource(resource(env))
                 .with_batch_exporter(exporter)
                 .build(),
         )
+    } else {
+        None
+    };
+    let meter_provider = if otlp_enabled(env, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") {
+        let exporter = opentelemetry_otlp::MetricExporter::builder()
+            .with_http()
+            .build()?;
+        let provider = SdkMeterProvider::builder()
+            .with_resource(resource(env))
+            .with_periodic_exporter(exporter)
+            .build();
+        opentelemetry::global::set_meter_provider(provider.clone());
+        Some(provider)
     } else {
         None
     };
@@ -101,21 +117,30 @@ pub fn init(format: LogFormat) -> Result<TracingGuard, InitError> {
         .with(fmt)
         .with(otel)
         .try_init()?;
-    Ok(TracingGuard { provider })
+    Ok(TracingGuard {
+        provider,
+        meter_provider,
+    })
+}
+
+fn resource(env: impl Fn(&str) -> Option<String>) -> Resource {
+    let mut resource = Resource::builder();
+    if needs_default_service_name(env) {
+        resource = resource.with_service_name(SERVICE_NAME);
+    }
+    resource.build()
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.trim().is_empty())
 }
 
-/// OTLP is on when either the general or the traces endpoint is set.
-fn otlp_enabled(env: impl Fn(&str) -> Option<String>) -> bool {
-    [
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    ]
-    .iter()
-    .any(|key| non_empty(env(key)).is_some())
+/// OTLP is on for a signal when the general endpoint or the signal's own
+/// endpoint (`signal_endpoint`) is set.
+fn otlp_enabled(env: impl Fn(&str) -> Option<String>, signal_endpoint: &str) -> bool {
+    ["OTEL_EXPORTER_OTLP_ENDPOINT", signal_endpoint]
+        .iter()
+        .any(|key| non_empty(env(key)).is_some())
 }
 
 /// The SDK names the service `unknown_service` unless the env names it.
@@ -155,20 +180,33 @@ mod tests {
 
     #[test]
     fn otlp_is_off_without_an_endpoint() {
-        assert!(!otlp_enabled(env(&[])));
-        assert!(!otlp_enabled(env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "  ")])));
+        for signal in [TRACES, METRICS] {
+            assert!(!otlp_enabled(env(&[]), signal));
+            assert!(!otlp_enabled(
+                env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "  ")]),
+                signal
+            ));
+        }
+    }
+
+    const TRACES: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
+    const METRICS: &str = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT";
+
+    #[test]
+    fn the_general_endpoint_turns_on_every_signal() {
+        let general = env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")]);
+        assert!(otlp_enabled(&general, TRACES));
+        assert!(otlp_enabled(&general, METRICS));
     }
 
     #[test]
-    fn otlp_is_on_with_either_endpoint() {
-        assert!(otlp_enabled(env(&[(
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            "http://collector:4318"
-        )])));
-        assert!(otlp_enabled(env(&[(
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-            "http://collector:4318/v1/traces"
-        )])));
+    fn a_signal_endpoint_turns_on_only_that_signal() {
+        let traces = env(&[(TRACES, "http://collector:4318/v1/traces")]);
+        assert!(otlp_enabled(&traces, TRACES));
+        assert!(!otlp_enabled(&traces, METRICS));
+        let metrics = env(&[(METRICS, "http://collector:4318/v1/metrics")]);
+        assert!(otlp_enabled(&metrics, METRICS));
+        assert!(!otlp_enabled(&metrics, TRACES));
     }
 
     #[test]

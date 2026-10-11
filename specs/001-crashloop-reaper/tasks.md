@@ -257,7 +257,7 @@ with the owner's agreement and saying so in the commit.
 
 ### Runtime and observability
 
-- [ ] G10 OTel metrics: enable the SDK/OTLP `metrics` features and install a global meter provider in `main`, so the meters mirrored in telemetry.rs are actually exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (contracts/metrics.md)
+- [X] G10 OTel metrics: enable the SDK/OTLP `metrics` features and install a global meter provider in `main`, so the meters mirrored in telemetry.rs are actually exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (contracts/metrics.md)
 - [X] G11 `/readyz` must fail when the last cycle is older than 3× the interval (contracts/config.md HTTP); today readiness is set once after the first cycle
 - [ ] G12 Confirm `reaper_cycle_duration_seconds` bucket boundaries and whether the metric family should declare a unit; record in contracts/metrics.md
 - [X] G13 Cycles run on a timer only; watch-triggered cycles are T054. Until then, document that reaction time is up to one `cycleInterval`
