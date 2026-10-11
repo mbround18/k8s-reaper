@@ -29,7 +29,9 @@ The story does three things:
 1. **Invalid config at start.** It applies an invalid `ReaperConfig`, then
    restarts the reaper.
    - Expected: `/readyz` is 503 with `no valid config applied yet`, and
-     `Ready` is `False` with reason `CachesNotSynced`.
+     `Valid` is `False`. `Ready` reports only the loop (contracts/config.md):
+     `CachesNotSynced` until the first cycle finishes, then `CycleCompleted`.
+     It is never `NotReady`.
    - It then fixes the config. The reaper becomes ready within one cycle,
      and `Ready` is `True` with reason `CycleCompleted`.
 2. **Invalid edit while running.** It edits the config to an invalid value.
