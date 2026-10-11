@@ -274,6 +274,8 @@ with the owner's agreement and saying so in the commit.
 
 ### Found while documenting (2026-10-11)
 
+Specified as `specs/002-post-rollout-hardening/`; closed there.
+
 Each was found by writing the guides against the code; the guides describe
 today's behaviour and need updating when one closes.
 
