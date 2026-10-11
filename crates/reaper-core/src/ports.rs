@@ -107,9 +107,43 @@ pub enum ActionKind {
     HelmReleaseRelease,
     CronJobSuspend,
     CronJobResume,
+    /// The reaper's own labels and annotations. Counted only on failure.
+    Record,
 }
 
 impl ActionKind {
+    /// Every variant, in declaration order (the `action` label values).
+    pub const ALL: [ActionKind; 10] = [
+        ActionKind::Reap,
+        ActionKind::Restore,
+        ActionKind::Scale,
+        ActionKind::KustomizeDisable,
+        ActionKind::KustomizeRestore,
+        ActionKind::HelmReleaseHold,
+        ActionKind::HelmReleaseRelease,
+        ActionKind::CronJobSuspend,
+        ActionKind::CronJobResume,
+        ActionKind::Record,
+    ];
+
+    /// The variant's index in `ALL`. Exhaustive, so a new variant does not
+    /// compile until it is given the next position here, and at the same
+    /// position in `ALL`.
+    const fn position(self) -> usize {
+        match self {
+            ActionKind::Reap => 0,
+            ActionKind::Restore => 1,
+            ActionKind::Scale => 2,
+            ActionKind::KustomizeDisable => 3,
+            ActionKind::KustomizeRestore => 4,
+            ActionKind::HelmReleaseHold => 5,
+            ActionKind::HelmReleaseRelease => 6,
+            ActionKind::CronJobSuspend => 7,
+            ActionKind::CronJobResume => 8,
+            ActionKind::Record => 9,
+        }
+    }
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -122,9 +156,18 @@ impl ActionKind {
             ActionKind::HelmReleaseRelease => "helmrelease_release",
             ActionKind::CronJobSuspend => "cronjob_suspend",
             ActionKind::CronJobResume => "cronjob_resume",
+            ActionKind::Record => "record",
         }
     }
 }
+
+const _: () = {
+    let mut i = 0;
+    while i < ActionKind::ALL.len() {
+        assert!(ActionKind::ALL[i].position() == i);
+        i += 1;
+    }
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ActionResult {
@@ -150,4 +193,17 @@ pub trait Telemetry {
     /// Replace every per-workload series with `rows` (stale ones disappear).
     fn workloads(&self, rows: &[WorkloadRow]);
     fn action(&self, kind: ActionKind, result: ActionResult, mode: Mode);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_labels_are_distinct() {
+        let labels: std::collections::BTreeSet<_> =
+            ActionKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(labels.len(), ActionKind::ALL.len());
+        assert_eq!(ActionKind::Record.as_str(), "record");
+    }
 }

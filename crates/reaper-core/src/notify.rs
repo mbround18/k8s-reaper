@@ -25,6 +25,7 @@ pub const EVENT_REASONS: &[&str] = &[
     "JobFailuresRecovered",
     "HelmReleaseHeld",
     "HelmReleaseReleased",
+    "RecordFailed",
     "ConfigInvalid",
     "ConfigApplied",
 ];
@@ -135,6 +136,13 @@ mod tests {
         for r in DEFAULT_REASONS {
             assert!(EVENT_REASONS.contains(r), "{r}");
         }
+    }
+
+    /// A filter may name it, but it is not sent unless one does.
+    #[test]
+    fn record_failed_is_opt_in() {
+        assert!(EVENT_REASONS.contains(&"RecordFailed"));
+        assert!(!DEFAULT_REASONS.contains(&"RecordFailed"));
     }
 
     #[test]

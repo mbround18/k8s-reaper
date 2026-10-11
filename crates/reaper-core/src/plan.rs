@@ -77,6 +77,36 @@ pub enum SkipReason {
 }
 
 impl SkipReason {
+    /// Every variant, in declaration order (metric label sets, docs tables).
+    pub const ALL: [SkipReason; 9] = [
+        SkipReason::OptedOut,
+        SkipReason::ReportOnlyScope,
+        SkipReason::CannotScaleToZero,
+        SkipReason::UnsupportedOwner,
+        SkipReason::ManagedByController,
+        SkipReason::ManagedByAutoscaler,
+        SkipReason::PartiallyAvailable,
+        SkipReason::RateLimited,
+        SkipReason::ReapCeilingReached,
+    ];
+
+    /// The variant's index in `ALL`. Exhaustive, so a new variant does not
+    /// compile until it is given the next position here, and at the same
+    /// position in `ALL`.
+    const fn position(self) -> usize {
+        match self {
+            SkipReason::OptedOut => 0,
+            SkipReason::ReportOnlyScope => 1,
+            SkipReason::CannotScaleToZero => 2,
+            SkipReason::UnsupportedOwner => 3,
+            SkipReason::ManagedByController => 4,
+            SkipReason::ManagedByAutoscaler => 5,
+            SkipReason::PartiallyAvailable => 6,
+            SkipReason::RateLimited => 7,
+            SkipReason::ReapCeilingReached => 8,
+        }
+    }
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -104,6 +134,24 @@ pub enum RestoreKind {
 }
 
 impl RestoreKind {
+    /// Every variant, in declaration order.
+    pub const ALL: [RestoreKind; 4] = [
+        RestoreKind::Requested,
+        RestoreKind::ManualScaleUp,
+        RestoreKind::ManualResume,
+        RestoreKind::OptedOut,
+    ];
+
+    /// The variant's index in `ALL`; see `SkipReason::position`.
+    const fn position(self) -> usize {
+        match self {
+            RestoreKind::Requested => 0,
+            RestoreKind::ManualScaleUp => 1,
+            RestoreKind::ManualResume => 2,
+            RestoreKind::OptedOut => 3,
+        }
+    }
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -114,6 +162,20 @@ impl RestoreKind {
         }
     }
 }
+
+// Each `ALL[i]` is at position `i`: no entry is repeated or out of order.
+const _: () = {
+    let mut i = 0;
+    while i < SkipReason::ALL.len() {
+        assert!(SkipReason::ALL[i].position() == i);
+        i += 1;
+    }
+    let mut i = 0;
+    while i < RestoreKind::ALL.len() {
+        assert!(RestoreKind::ALL[i].position() == i);
+        i += 1;
+    }
+};
 
 /// The decision for one workload in one cycle. Identical in both modes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +331,8 @@ pub enum Transition {
     JobFailuresRecovered,
     HelmReleaseHeld,
     HelmReleaseReleased,
+    /// Writing the reaper's own label, record or plan annotation failed.
+    RecordFailed,
 }
 
 impl Transition {
@@ -289,6 +353,7 @@ impl Transition {
             Transition::JobFailuresRecovered => "JobFailuresRecovered",
             Transition::HelmReleaseHeld => "HelmReleaseHeld",
             Transition::HelmReleaseReleased => "HelmReleaseReleased",
+            Transition::RecordFailed => "RecordFailed",
         }
     }
 
@@ -302,6 +367,7 @@ impl Transition {
                 | Transition::ReapFailed
                 | Transition::RestoreFailed
                 | Transition::HelmReleaseHeld
+                | Transition::RecordFailed
         )
     }
 
@@ -318,6 +384,7 @@ impl Transition {
             Transition::CrashLoopRecovered | Transition::JobFailuresRecovered => "Recover",
             Transition::HelmReleaseHeld => "Suspend",
             Transition::HelmReleaseReleased => "Resume",
+            Transition::RecordFailed => "Record",
         }
     }
 }
@@ -458,5 +525,29 @@ mod tests {
         assert!(Transition::Reaped.is_warning());
         assert!(!Transition::Restored(RestoreKind::Requested).is_warning());
         assert_eq!(Transition::HelmReleaseHeld.action(), "Suspend");
+        assert_eq!(Transition::RecordFailed.reason(), "RecordFailed");
+        assert_eq!(Transition::RecordFailed.action(), "Record");
+        assert!(Transition::RecordFailed.is_warning());
+    }
+
+    /// `as_str` is the serde name, so the label parses back to the variant.
+    #[test]
+    fn skip_reasons_round_trip() {
+        let mut seen = std::collections::BTreeSet::new();
+        for r in SkipReason::ALL {
+            assert!(seen.insert(r.as_str()), "{r:?} repeats a label");
+            let back: SkipReason = serde_json::from_value(r.as_str().into()).unwrap();
+            assert_eq!(back, r);
+        }
+    }
+
+    #[test]
+    fn restore_kinds_round_trip() {
+        let mut seen = std::collections::BTreeSet::new();
+        for k in RestoreKind::ALL {
+            assert!(seen.insert(k.as_str()), "{k:?} repeats a label");
+            let back: RestoreKind = serde_json::from_value(k.as_str().into()).unwrap();
+            assert_eq!(back, k);
+        }
     }
 }

@@ -21,16 +21,16 @@ Cluster work runs only with `KUBE_CONTEXT=kind-fathom-dev`, never `default`
 
 ## Phase 1: Setup
 
-- [ ] T101 Check the baseline: `make test` is green on `744a865`, and `cargo bench -p reaper-core --bench decide` passes. Record the test count (252 passed, 6 ignored at `7631000`).
+- [X] T101 Check the baseline: `make test` is green on `744a865`, and `cargo bench -p reaper-core --bench decide` passes. Record the test count (252 passed, 6 ignored at `7631000`).
 
 ## Phase 2: Foundational (blocks US2, US3 and US4)
 
 These change the core enums that several stories match on. Doing them first
 keeps the parallel stories from editing the same lines.
 
-- [ ] T110 Add `SkipReason::ALL: [SkipReason; 9]` and `RestoreKind::ALL: [RestoreKind; 4]` to `crates/reaper-core/src/plan.rs`. Each is guarded by a `const fn` with an exhaustive `match`, so a new variant fails to compile until it is listed. Add a unit test that `as_str` round-trips for every entry. (T142 shrinks `SkipReason::ALL` to 7.)
-- [ ] T111 Add `ActionKind::Record` (`"record"`) and `ActionKind::ALL: [ActionKind; 10]` to `crates/reaper-core/src/ports.rs`, with the same exhaustive guard. Update every `match` on `ActionKind` (the telemetry label in `crates/reaper-observability/src/telemetry.rs` and the fakes in `crates/reaper-core/src/testing.rs`).
-- [ ] T112 Add `Transition::RecordFailed` to `crates/reaper-core/src/plan.rs`: a Warning, action field `Record`, the reason string `RecordFailed`. Update every `match` on `Transition`, including the Event mapping in `crates/reaper-kube/src/events.rs` and notification filtering in `crates/reaper-notify` (not notified by default, like `ReapFailed`).
+- [X] T110 Add `SkipReason::ALL: [SkipReason; 9]` and `RestoreKind::ALL: [RestoreKind; 4]` to `crates/reaper-core/src/plan.rs`. Each is guarded by a `const fn` with an exhaustive `match`, so a new variant fails to compile until it is listed. Add a unit test that `as_str` round-trips for every entry. (T142 shrinks `SkipReason::ALL` to 7.)
+- [X] T111 Add `ActionKind::Record` (`"record"`) and `ActionKind::ALL: [ActionKind; 10]` to `crates/reaper-core/src/ports.rs`, with the same exhaustive guard. Update every `match` on `ActionKind` (the telemetry label in `crates/reaper-observability/src/telemetry.rs` and the fakes in `crates/reaper-core/src/testing.rs`).
+- [X] T112 Add `Transition::RecordFailed` to `crates/reaper-core/src/plan.rs`: a Warning, action field `Record`, the reason string `RecordFailed`. Update every `match` on `Transition`, including the Event mapping in `crates/reaper-kube/src/events.rs` and notification filtering in `crates/reaper-notify` (not notified by default, like `ReapFailed`).
 
 **Checkpoint**: `make test` is green; nothing emits the new variants yet.
 
