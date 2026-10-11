@@ -1,0 +1,44 @@
+{
+  "apiVersion": "helm.toolkit.fluxcd.io/v2",
+  "kind": "HelmRelease",
+  "metadata": {
+    "name": "storefront",
+    "namespace": "shop-prod",
+    "uid": "00000000-0000-4000-8000-000000000601",
+    "resourceVersion": "980011",
+    "generation": 7,
+    "labels": {
+      "kustomize.toolkit.fluxcd.io/name": "apps",
+      "kustomize.toolkit.fluxcd.io/namespace": "flux-system"
+    },
+    "annotations": {
+      "kustomize.toolkit.fluxcd.io/reconcile": "enabled",
+      "reaper.boop.ninja/held-for": "[\"Deployment/shop-prod/storefront\"]",
+      "reconcile.fluxcd.io/requestedAt": "2026-09-28T16:01:55Z"
+    }
+  },
+  "spec": {
+    "interval": "10m",
+    "suspend": true,
+    "chart": {
+      "spec": {
+        "chart": "storefront",
+        "version": "0.9.3",
+        "sourceRef": { "kind": "HelmRepository", "name": "shop-charts", "namespace": "flux-system" }
+      }
+    },
+    "values": { "replicaCount": 2 }
+  },
+  "status": {
+    "observedGeneration": 7,
+    "conditions": [
+      {
+        "type": "Ready",
+        "status": "True",
+        "reason": "UpgradeSucceeded",
+        "message": "Helm upgrade succeeded for release shop-prod/storefront.v14 with chart storefront@0.9.3",
+        "lastTransitionTime": "2026-09-28T16:03:05Z"
+      }
+    ]
+  }
+}

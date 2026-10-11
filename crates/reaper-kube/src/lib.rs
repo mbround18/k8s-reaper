@@ -2,4 +2,5 @@
 
 pub mod crd;
 pub mod events;
+pub mod snapshot;
 pub mod writer;

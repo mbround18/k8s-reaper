@@ -1,0 +1,118 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "storefront",
+    "namespace": "shop-prod",
+    "uid": "00000000-0000-4000-8000-000000000201",
+    "resourceVersion": "981234",
+    "generation": 14,
+    "creationTimestamp": "2026-03-02T09:20:41Z",
+    "labels": {
+      "app.kubernetes.io/instance": "storefront",
+      "app.kubernetes.io/managed-by": "Helm",
+      "app.kubernetes.io/name": "storefront",
+      "app.kubernetes.io/version": "1.4.2",
+      "helm.sh/chart": "storefront-0.9.3",
+      "helm.toolkit.fluxcd.io/name": "storefront",
+      "helm.toolkit.fluxcd.io/namespace": "shop-prod",
+      "reaper.boop.ninja/state": "observed"
+    },
+    "annotations": {
+      "deployment.kubernetes.io/revision": "14",
+      "meta.helm.sh/release-name": "storefront",
+      "meta.helm.sh/release-namespace": "shop-prod",
+      "reaper.boop.ninja/crashloop-since": "2026-10-10T07:55:00Z",
+      "reaper.boop.ninja/mode": "report"
+    },
+    "managedFields": [
+      {
+        "manager": "helm-controller",
+        "operation": "Update",
+        "apiVersion": "apps/v1",
+        "time": "2026-09-28T16:02:11Z",
+        "fieldsType": "FieldsV1",
+        "fieldsV1": { "f:spec": { "f:replicas": {} } }
+      }
+    ]
+  },
+  "spec": {
+    "replicas": 2,
+    "revisionHistoryLimit": 10,
+    "progressDeadlineSeconds": 600,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/instance": "storefront",
+        "app.kubernetes.io/name": "storefront"
+      }
+    },
+    "strategy": {
+      "type": "RollingUpdate",
+      "rollingUpdate": { "maxSurge": "25%", "maxUnavailable": "25%" }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/instance": "storefront",
+          "app.kubernetes.io/name": "storefront"
+        }
+      },
+      "spec": {
+        "initContainers": [
+          {
+            "name": "migrate",
+            "image": "registry.example.test/shop/storefront:1.4.2",
+            "args": ["migrate", "--up"]
+          }
+        ],
+        "containers": [
+          {
+            "name": "storefront",
+            "image": "registry.example.test/shop/storefront:1.4.2",
+            "ports": [{ "name": "http", "containerPort": 8080, "protocol": "TCP" }],
+            "readinessProbe": {
+              "httpGet": { "path": "/healthz", "port": "http", "scheme": "HTTP" },
+              "periodSeconds": 10,
+              "timeoutSeconds": 1,
+              "successThreshold": 1,
+              "failureThreshold": 3
+            },
+            "resources": {
+              "limits": { "memory": "256Mi" },
+              "requests": { "cpu": "50m", "memory": "128Mi" }
+            }
+          }
+        ],
+        "restartPolicy": "Always",
+        "terminationGracePeriodSeconds": 30,
+        "dnsPolicy": "ClusterFirst",
+        "schedulerName": "default-scheduler"
+      }
+    }
+  },
+  "status": {
+    "observedGeneration": 14,
+    "replicas": 2,
+    "updatedReplicas": 2,
+    "readyReplicas": 2,
+    "availableReplicas": 2,
+    "conditions": [
+      {
+        "type": "Available",
+        "status": "True",
+        "reason": "MinimumReplicasAvailable",
+        "message": "Deployment has minimum availability.",
+        "lastTransitionTime": "2026-09-28T16:03:02Z",
+        "lastUpdateTime": "2026-09-28T16:03:02Z"
+      },
+      {
+        "type": "Progressing",
+        "status": "True",
+        "reason": "NewReplicaSetAvailable",
+        "message": "ReplicaSet \"storefront-7d9f8c6b5d\" has successfully progressed.",
+        "lastTransitionTime": "2026-03-02T09:20:41Z",
+        "lastUpdateTime": "2026-09-28T16:03:02Z"
+      }
+    ]
+  }
+}

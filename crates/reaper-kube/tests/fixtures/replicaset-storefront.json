@@ -1,0 +1,63 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "ReplicaSet",
+  "metadata": {
+    "name": "storefront-7d9f8c6b5d",
+    "namespace": "shop-prod",
+    "uid": "00000000-0000-4000-8000-000000000202",
+    "resourceVersion": "981230",
+    "generation": 2,
+    "creationTimestamp": "2026-09-28T16:02:11Z",
+    "labels": {
+      "app.kubernetes.io/instance": "storefront",
+      "app.kubernetes.io/name": "storefront",
+      "pod-template-hash": "7d9f8c6b5d"
+    },
+    "annotations": {
+      "deployment.kubernetes.io/desired-replicas": "2",
+      "deployment.kubernetes.io/max-replicas": "3",
+      "deployment.kubernetes.io/revision": "14"
+    },
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "storefront",
+        "uid": "00000000-0000-4000-8000-000000000201",
+        "controller": true,
+        "blockOwnerDeletion": true
+      }
+    ]
+  },
+  "spec": {
+    "replicas": 2,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/instance": "storefront",
+        "app.kubernetes.io/name": "storefront",
+        "pod-template-hash": "7d9f8c6b5d"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/instance": "storefront",
+          "app.kubernetes.io/name": "storefront",
+          "pod-template-hash": "7d9f8c6b5d"
+        }
+      },
+      "spec": {
+        "containers": [
+          { "name": "storefront", "image": "registry.example.test/shop/storefront:1.4.2" }
+        ]
+      }
+    }
+  },
+  "status": {
+    "observedGeneration": 2,
+    "replicas": 2,
+    "fullyLabeledReplicas": 2,
+    "readyReplicas": 2,
+    "availableReplicas": 2
+  }
+}

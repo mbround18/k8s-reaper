@@ -1,0 +1,57 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "ledger-worker-6f7b8c9d4-m3pzt",
+    "generateName": "ledger-worker-6f7b8c9d4-",
+    "namespace": "ledger-dev",
+    "uid": "00000000-0000-4000-8000-000000000501",
+    "resourceVersion": "1204502",
+    "creationTimestamp": "2026-10-10T06:12:30Z",
+    "labels": {
+      "app": "ledger-worker",
+      "pod-template-hash": "6f7b8c9d4"
+    },
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "name": "ledger-worker-6f7b8c9d4",
+        "uid": "00000000-0000-4000-8000-000000000502",
+        "controller": true,
+        "blockOwnerDeletion": true
+      }
+    ]
+  },
+  "spec": {
+    "nodeName": "node-b",
+    "restartPolicy": "Always",
+    "containers": [
+      { "name": "worker", "image": "registry.example.test/ledger/worker:0.18.0-rc.9" }
+    ]
+  },
+  "status": {
+    "phase": "Pending",
+    "hostIP": "192.0.2.12",
+    "podIP": "198.51.100.61",
+    "qosClass": "BestEffort",
+    "startTime": "2026-10-10T06:12:30Z",
+    "containerStatuses": [
+      {
+        "name": "worker",
+        "image": "registry.example.test/ledger/worker:0.18.0-rc.9",
+        "imageID": "",
+        "ready": false,
+        "started": false,
+        "restartCount": 0,
+        "state": {
+          "waiting": {
+            "reason": "ImagePullBackOff",
+            "message": "Back-off pulling image \"registry.example.test/ledger/worker:0.18.0-rc.9\""
+          }
+        },
+        "lastState": {}
+      }
+    ]
+  }
+}

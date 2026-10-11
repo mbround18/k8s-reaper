@@ -1,0 +1,31 @@
+{
+  "apiVersion": "keda.sh/v1alpha1",
+  "kind": "ScaledObject",
+  "metadata": {
+    "name": "ledger-worker",
+    "namespace": "ledger-dev",
+    "uid": "00000000-0000-4000-8000-000000000701",
+    "resourceVersion": "1188001",
+    "generation": 3
+  },
+  "spec": {
+    "scaleTargetRef": { "name": "ledger-worker" },
+    "minReplicaCount": 0,
+    "maxReplicaCount": 5,
+    "triggers": [
+      {
+        "type": "nats-jetstream",
+        "metadata": {
+          "natsServerMonitoringEndpoint": "nats.messaging.svc.cluster.local:8222",
+          "stream": "ledger",
+          "consumer": "worker",
+          "lagThreshold": "20"
+        }
+      }
+    ]
+  },
+  "status": {
+    "scaleTargetKind": "apps/v1.Deployment",
+    "scaleTargetGVKR": { "group": "apps", "version": "v1", "kind": "Deployment", "resource": "deployments" }
+  }
+}

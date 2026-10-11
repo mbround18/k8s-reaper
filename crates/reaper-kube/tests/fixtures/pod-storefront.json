@@ -1,0 +1,90 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "storefront-7d9f8c6b5d-q8x4n",
+    "generateName": "storefront-7d9f8c6b5d-",
+    "namespace": "shop-prod",
+    "uid": "00000000-0000-4000-8000-000000000203",
+    "resourceVersion": "981221",
+    "creationTimestamp": "2026-09-28T16:02:12Z",
+    "labels": {
+      "app.kubernetes.io/instance": "storefront",
+      "app.kubernetes.io/name": "storefront",
+      "pod-template-hash": "7d9f8c6b5d"
+    },
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "name": "storefront-7d9f8c6b5d",
+        "uid": "00000000-0000-4000-8000-000000000202",
+        "controller": true,
+        "blockOwnerDeletion": true
+      }
+    ]
+  },
+  "spec": {
+    "nodeName": "node-a",
+    "serviceAccountName": "default",
+    "restartPolicy": "Always",
+    "initContainers": [
+      {
+        "name": "migrate",
+        "image": "registry.example.test/shop/storefront:1.4.2",
+        "args": ["migrate", "--up"]
+      }
+    ],
+    "containers": [
+      { "name": "storefront", "image": "registry.example.test/shop/storefront:1.4.2" }
+    ]
+  },
+  "status": {
+    "phase": "Running",
+    "hostIP": "192.0.2.11",
+    "podIP": "198.51.100.23",
+    "podIPs": [{ "ip": "198.51.100.23" }],
+    "qosClass": "Burstable",
+    "startTime": "2026-09-28T16:02:12Z",
+    "conditions": [
+      { "type": "Initialized", "status": "True", "lastTransitionTime": "2026-09-28T16:02:19Z" },
+      { "type": "Ready", "status": "True", "lastTransitionTime": "2026-09-28T16:02:31Z" },
+      { "type": "ContainersReady", "status": "True", "lastTransitionTime": "2026-09-28T16:02:31Z" },
+      { "type": "PodScheduled", "status": "True", "lastTransitionTime": "2026-09-28T16:02:12Z" }
+    ],
+    "initContainerStatuses": [
+      {
+        "name": "migrate",
+        "image": "registry.example.test/shop/storefront:1.4.2",
+        "imageID": "registry.example.test/shop/storefront@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+        "containerID": "containerd://0000000000000000000000000000000000000000000000000000000000000a01",
+        "ready": true,
+        "restartCount": 0,
+        "started": false,
+        "state": {
+          "terminated": {
+            "exitCode": 0,
+            "reason": "Completed",
+            "startedAt": "2026-09-28T16:02:14Z",
+            "finishedAt": "2026-09-28T16:02:18Z",
+            "containerID": "containerd://0000000000000000000000000000000000000000000000000000000000000a01"
+          }
+        },
+        "lastState": {}
+      }
+    ],
+    "containerStatuses": [
+      {
+        "name": "storefront",
+        "image": "registry.example.test/shop/storefront:1.4.2",
+        "imageID": "registry.example.test/shop/storefront@sha256:0000000000000000000000000000000000000000000000000000000000000001",
+        "containerID": "containerd://0000000000000000000000000000000000000000000000000000000000000a02",
+        "ready": true,
+        "started": true,
+        "restartCount": 0,
+        "state": { "running": { "startedAt": "2026-09-28T16:02:19Z" } },
+        "lastState": {}
+      }
+    ]
+  }
+}

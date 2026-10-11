@@ -1,0 +1,63 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "nightly-report-29812340-7wq2z",
+    "generateName": "nightly-report-29812340-",
+    "namespace": "shop-prod",
+    "uid": "00000000-0000-4000-8000-000000000401",
+    "resourceVersion": "1199870",
+    "creationTimestamp": "2026-10-10T02:00:00Z",
+    "labels": {
+      "batch.kubernetes.io/controller-uid": "00000000-0000-4000-8000-000000000402",
+      "batch.kubernetes.io/job-name": "nightly-report-29812340",
+      "controller-uid": "00000000-0000-4000-8000-000000000402",
+      "job-name": "nightly-report-29812340"
+    },
+    "ownerReferences": [
+      {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "name": "nightly-report-29812340",
+        "uid": "00000000-0000-4000-8000-000000000402",
+        "controller": true,
+        "blockOwnerDeletion": true
+      }
+    ]
+  },
+  "spec": {
+    "nodeName": "node-a",
+    "restartPolicy": "Never",
+    "containers": [
+      { "name": "report", "image": "registry.example.test/shop/reports:3.0.1" }
+    ]
+  },
+  "status": {
+    "phase": "Failed",
+    "hostIP": "192.0.2.11",
+    "podIP": "198.51.100.88",
+    "qosClass": "BestEffort",
+    "startTime": "2026-10-10T02:00:00Z",
+    "containerStatuses": [
+      {
+        "name": "report",
+        "image": "registry.example.test/shop/reports:3.0.1",
+        "imageID": "registry.example.test/shop/reports@sha256:0000000000000000000000000000000000000000000000000000000000000004",
+        "containerID": "containerd://0000000000000000000000000000000000000000000000000000000000000c01",
+        "ready": false,
+        "started": false,
+        "restartCount": 0,
+        "state": {
+          "terminated": {
+            "exitCode": 2,
+            "reason": "Error",
+            "startedAt": "2026-10-10T02:00:03Z",
+            "finishedAt": "2026-10-10T02:00:41Z",
+            "containerID": "containerd://0000000000000000000000000000000000000000000000000000000000000c01"
+          }
+        },
+        "lastState": {}
+      }
+    ]
+  }
+}

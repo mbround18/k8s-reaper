@@ -605,6 +605,7 @@ checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
 dependencies = [
  "futures-channel",
  "futures-core",
+ "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",
@@ -1802,23 +1803,30 @@ dependencies = [
 name = "reaper-flux"
 version = "0.1.0"
 dependencies = [
+ "k8s-openapi",
+ "kube",
  "reaper-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "reaper-kube"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "http",
  "k8s-openapi",
  "kube",
  "reaper-core",
+ "reaper-flux",
  "schemars",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "tokio",
  "tower-test",
+ "tracing",
 ]
 
 [[package]]
