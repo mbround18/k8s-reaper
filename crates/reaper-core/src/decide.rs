@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use crate::config::{
     CRASH_LOOP_DURATION_RANGE, Config, FAILING_DURATION_RANGE, MIN_FAILED_RUNS_RANGE,
-    MIN_RESTARTS_RANGE, Mode, parse_mode_override,
+    MIN_RESTARTS_RANGE, Mode, THRESHOLD_RANGE, WINDOW_RUNS_RANGE, parse_mode_override,
+    parse_percent,
 };
 use crate::detect::{
     JobStreak, Streak, WorkloadPods, group_pods, job_streak, rate_met, update_history,
@@ -25,8 +26,9 @@ use crate::plan::{
     SkipReason, StaleHold,
 };
 use crate::record::{
-    CRASHLOOP_DURATION, FAILING_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold,
-    MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE, RunHistory, State, WorkloadRecord,
+    CRASHLOOP_DURATION, FAILING_DURATION, FAILURE_RATE, FAILURE_THRESHOLD, FAILURE_WINDOW,
+    FLUX_RECONCILE_DISABLED, HelmReleaseHold, MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE,
+    RunHistory, State, WorkloadRecord,
 };
 use crate::time::parse_duration;
 
@@ -290,22 +292,43 @@ impl Thresholds {
                 }
             })
         };
+        let min_restarts = count(
+            MIN_RESTARTS,
+            MIN_RESTARTS_RANGE,
+            config.detection.min_restarts,
+        );
+        let min_failed_runs = count(
+            MIN_FAILED_RUNS,
+            MIN_FAILED_RUNS_RANGE,
+            config.cron_jobs.min_failed_runs,
+        );
+        let rate = &config.cron_jobs.failure_rate;
+        let window_runs = count(FAILURE_WINDOW, WINDOW_RUNS_RANGE, rate.window_runs);
+        let threshold = get(FAILURE_THRESHOLD).map_or(rate.threshold, |v| {
+            let (min, max) = THRESHOLD_RANGE;
+            match parse_percent(v) {
+                Some(p) if (min..=max).contains(&p) => p.max(rate.threshold),
+                _ => {
+                    bad(FAILURE_THRESHOLD, v);
+                    rate.threshold
+                }
+            }
+        });
+        // `off` is the only value: an annotation can turn the rule off, never on.
+        let turned_off = get(FAILURE_RATE).is_some_and(|v| {
+            if v != "off" {
+                bad(FAILURE_RATE, v);
+            }
+            v == "off"
+        });
         Thresholds {
             crash_loop_duration,
-            min_restarts: count(
-                MIN_RESTARTS,
-                MIN_RESTARTS_RANGE,
-                config.detection.min_restarts,
-            ),
+            min_restarts,
             failing_duration,
-            min_failed_runs: count(
-                MIN_FAILED_RUNS,
-                MIN_FAILED_RUNS_RANGE,
-                config.cron_jobs.min_failed_runs,
-            ),
-            failure_rate_enabled: config.cron_jobs.failure_rate.enabled,
-            window_runs: config.cron_jobs.failure_rate.window_runs,
-            threshold: config.cron_jobs.failure_rate.threshold,
+            min_failed_runs,
+            failure_rate_enabled: rate.enabled && !turned_off,
+            window_runs,
+            threshold,
         }
     }
 }
@@ -454,10 +477,13 @@ fn decide_cron_job(
         None
     };
     if failing.is_none() && history.is_none() {
-        let plan = if has_state {
+        // Turning the rule off is not a recovery: drop its history quietly.
+        let plan = if !has_state {
+            Plan::Nothing
+        } else if thresholds.failure_rate_enabled || record.failing_since.is_some() {
             Plan::Recover
         } else {
-            Plan::Nothing
+            Plan::Forget
         };
         return decision(plan, None, None, None);
     }
@@ -2196,5 +2222,97 @@ mod tests {
         // The history began seven hours ago, before the crash loop.
         assert!(matches!(reap_of(&p, "ingest"), Plan::Reap { .. }));
         assert_eq!(skip_of(&reap_of(&p, "web")), Some(SkipReason::RateLimited));
+    }
+
+    // Spec 003 US3: per-CronJob overrides and turning the rule off.
+
+    /// Thresholds for `app/ingest` with these annotations, against the
+    /// default cluster window of 10 and threshold of 80.
+    fn rate_overrides(pairs: &[(&str, &str)]) -> (Thresholds, Vec<String>) {
+        let mut w = cron_job("app", "ingest");
+        for (k, v) in pairs {
+            w.reaper_annotations.insert((*k).into(), (*v).into());
+        }
+        let mut invalid = BTreeSet::new();
+        let t = Thresholds::for_workload(&Config::default(), &w, &mut invalid);
+        (t, invalid.into_iter().map(|i| i.key).collect())
+    }
+
+    #[test]
+    fn failure_window_override_only_raises_it() {
+        let window = |v| {
+            let (t, invalid) = rate_overrides(&[(FAILURE_WINDOW, v)]);
+            (t.window_runs, invalid)
+        };
+        assert_eq!(window("15"), (15, vec![]));
+        assert_eq!(window("5"), (10, vec![]));
+        for bad in ["2", "101", "x"] {
+            assert_eq!(window(bad), (10, vec![FAILURE_WINDOW.to_owned()]), "{bad}");
+        }
+    }
+
+    #[test]
+    fn failure_threshold_override_only_raises_it() {
+        let threshold = |v| {
+            let (t, invalid) = rate_overrides(&[(FAILURE_THRESHOLD, v)]);
+            (t.threshold, invalid)
+        };
+        assert_eq!(threshold("90"), (90, vec![]));
+        assert_eq!(threshold("90%"), (90, vec![]));
+        assert_eq!(threshold("60"), (80, vec![]));
+        for bad in ["50", "abc"] {
+            assert_eq!(
+                threshold(bad),
+                (80, vec![FAILURE_THRESHOLD.to_owned()]),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_rate_off_is_the_only_value_it_takes() {
+        let enabled = |v| {
+            let (t, invalid) = rate_overrides(&[(FAILURE_RATE, v)]);
+            (t.failure_rate_enabled, invalid)
+        };
+        assert_eq!(enabled("off"), (false, vec![]));
+        for bad in ["on", "yes"] {
+            assert_eq!(enabled(bad), (true, vec![FAILURE_RATE.to_owned()]), "{bad}");
+        }
+        assert!(rate_overrides(&[]).0.failure_rate_enabled);
+    }
+
+    #[test]
+    fn rate_rule_off_by_annotation_leaves_the_streak_alone() {
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.reaper_annotations
+            .insert(FAILURE_RATE.into(), "off".into());
+        let p = run(snapshot(), vec![c]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        assert_eq!(d.since, Some(mins_ago(2)));
+        assert_eq!(d.run_history, None);
+    }
+
+    #[test]
+    fn rate_rule_off_without_a_streak_forgets_the_history_quietly() {
+        let mut c = flaky_cron("FFFFFFFFFS");
+        c.reaper_annotations
+            .insert(FAILURE_RATE.into(), "off".into());
+        let p = run(snapshot(), vec![c]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Forget);
+        assert_eq!(d.run_history, None);
+    }
+
+    #[test]
+    fn rate_rule_turned_back_on_starts_from_the_current_streak() {
+        let mut c = flaky_cron("FFSFF");
+        c.reaper_annotations.remove(RUN_HISTORY);
+        let p = run(snapshot(), vec![c]);
+        let h = only(&p).run_history.clone().expect("a new history");
+        assert_eq!(h.since, mins_ago(2));
+        assert!(h.runs.iter().all(|r| !r.ok), "{h:?}");
+        assert_eq!(h.runs.len(), 2, "{h:?}");
     }
 }

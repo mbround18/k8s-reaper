@@ -293,7 +293,7 @@ rule off. The cluster-wide `enabled: false` turns the rule off everywhere.
 
 ### Tests first
 
-- [ ] T230 [P] [US3] Write unit tests for `Thresholds::for_workload` in
+- [X] T230 [P] [US3] Write unit tests for `Thresholds::for_workload` in
   `crates/reaper-core/src/decide.rs`, with a cluster window of 10 and a
   threshold of 80:
   - `failure-window=15` → 15 (US3-2);
@@ -304,7 +304,7 @@ rule off. The cluster-wide `enabled: false` turns the rule off everywhere.
   - `failure-threshold=50` or `=abc` → 80, plus an `InvalidSetting`;
   - `failure-rate=off` → disabled (US3-4);
   - `failure-rate=on` or `=yes` → enabled, plus an `InvalidSetting`.
-- [ ] T231 [P] [US3] Write unit tests in `crates/reaper-core/src/decide.rs`:
+- [X] T231 [P] [US3] Write unit tests in `crates/reaper-core/src/decide.rs`:
   - **Disabled cluster-wide.** With `failureRate.enabled: false` and a
     history that would be met, the CronJob is not a candidate, and the
     streak rule is unaffected (US3-1).
@@ -317,7 +317,7 @@ rule off. The cluster-wide `enabled: false` turns the rule off everywhere.
 
 ### Implementation
 
-- [ ] T232 [US3] In `Thresholds::for_workload` in
+- [X] T232 [US3] In `Thresholds::for_workload` in
   `crates/reaper-core/src/decide.rs`, resolve the three new annotations:
   - `failure-window` with the existing `count` helper, range `(3, 100)`,
     combined with `.max(global)`;
@@ -327,7 +327,7 @@ rule off. The cluster-wide `enabled: false` turns the rule off everywhere.
     `bad()`.
 
   This makes T230 pass.
-- [ ] T233 [US3] In `decide_cron_job` in `crates/reaper-core/src/decide.rs`,
+- [X] T233 [US3] In `decide_cron_job` in `crates/reaper-core/src/decide.rs`,
   when the rule is disabled (globally or by annotation):
   - skip `update_history`;
   - set the history to `None`;
