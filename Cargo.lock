@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-reaper"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "reaper-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "insta",
  "serde",
@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "reaper-flux"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "k8s-openapi",
  "kube",
@@ -1879,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "reaper-kube"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures",
  "http",
@@ -1898,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "reaper-notify"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "lettre",
@@ -1915,7 +1915,7 @@ dependencies = [
 
 [[package]]
 name = "reaper-observability"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "http-body-util",
