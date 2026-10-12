@@ -346,7 +346,7 @@ are never recorded afterwards.
 
 ### Tests first
 
-- [ ] T240 [P] [US4] Write unit tests in `crates/reaper-core/src/decide.rs`
+- [X] T240 [P] [US4] Write unit tests in `crates/reaper-core/src/decide.rs`
   for each `RestoreKind`: `Requested`, `ManualResume`, `OptedOut` and the
   release resume. For a CronJob reaped under the rate rule:
   - the restore's `ClearReaperState` leaves `run_history: None` and
@@ -354,7 +354,7 @@ are never recorded afterwards.
   - feeding one new failed Job then gives a one-run history and no
     candidate (US4-1, US4-2);
   - re-listing the pre-restore failed Jobs adds nothing.
-- [ ] T241 [P] [US4] Write unit tests in `crates/reaper-core/src/decide.rs`
+- [X] T241 [P] [US4] Write unit tests in `crates/reaper-core/src/decide.rs`
   that a history is cleared with `Forget` in each of these cases (FR-013):
   - `mode=off`;
   - `cronJobs.enabled: false`;
@@ -362,7 +362,7 @@ are never recorded afterwards.
 
 ### Implementation
 
-- [ ] T242 [US4] Make sure `ClearReaperState` in
+- [X] T242 [US4] Make sure `ClearReaperState` in
   `crates/reaper-core/src/executor.rs` (`desired_record`) drops
   `run_history`. Make sure the `Forget` and `Recover` paths write
   `WorkloadRecord::default()` with no history. Fix whatever T240 and T241

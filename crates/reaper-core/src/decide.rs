@@ -187,14 +187,25 @@ fn out_of_scope(snap: &Snapshot, w: &WorkloadView) -> Option<Decision> {
     if !matches!(record.state, Some(State::Reaping | State::Reaped)) {
         return None;
     }
+    let plan = held_plan(snap, w, &record, Mode::Off);
     Some(Decision {
         workload: w.workload.clone(),
-        plan: held_plan(snap, w, &record, Mode::Off),
+        run_history: kept_history(&plan, record.run_history),
+        plan,
         since: record.crashloop_since.or(record.failing_since),
         healthy_since: None,
         evidence: None,
-        run_history: record.run_history,
     })
+}
+
+/// A held CronJob keeps its history to explain the reap; a restore starts it
+/// over (FR-012).
+fn kept_history(plan: &Plan, history: Option<RunHistory>) -> Option<RunHistory> {
+    if matches!(plan, Plan::Restore { .. }) {
+        None
+    } else {
+        history
+    }
 }
 
 /// The most restrictive mode set by labels or annotations on the namespace and
@@ -437,10 +448,10 @@ fn decide_cron_job(
 
     match record.state {
         // Restore keeps working with `cronJobs.enabled: false` (FR-033).
-        // The history is kept to explain the reap.
         Some(State::Reaped | State::Reaping) => {
             let plan = held_plan(snap, w, &record, mode);
-            return decision(plan, record.failing_since, None, record.run_history);
+            let history = kept_history(&plan, record.run_history);
+            return decision(plan, record.failing_since, None, history);
         }
         _ if record.restore && mode != Mode::Off => {
             return decision(Plan::RestoreIgnored, None, None, None);
@@ -795,8 +806,8 @@ mod tests {
     use super::*;
     use crate::model::{NsName, WorkloadRef};
     use crate::record::{
-        CRASHLOOP_SINCE, FAILING_SINCE, HEALTHY_SINCE, HELMRELEASE, ORIGINAL_REPLICAS,
-        PREVIOUS_RECONCILE, PreviousReconcile, RUN_HISTORY,
+        CRASHLOOP_SINCE, FAILING_SINCE, HEALTHY_SINCE, HELMRELEASE, LAST_FAILED_JOB,
+        ORIGINAL_REPLICAS, PREVIOUS_RECONCILE, PreviousReconcile, RUN_HISTORY,
     };
     use crate::testing::{
         NOW, add_namespace, add_pod, crashlooping_container, cron_job, cron_mut, deployment,
@@ -2314,5 +2325,112 @@ mod tests {
         assert_eq!(h.since, mins_ago(2));
         assert!(h.runs.iter().all(|r| !r.ok), "{h:?}");
         assert_eq!(h.runs.len(), 2, "{h:?}");
+    }
+
+    // Spec 003 US4: a restore starts a clean slate (T240, T241).
+
+    /// `app/ingest` reaped under the rate rule, its history still on it.
+    /// The newest listed Job, `ingest-9`, failed.
+    fn reaped_flaky(suspended: bool) -> WorkloadView {
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.state_label = Some("reaped".into());
+        cron_mut(&mut c).suspended = suspended;
+        c
+    }
+
+    fn assert_clean_restore(p: &CyclePlan, kind: RestoreKind) {
+        let d = only(p);
+        let (got, actions) = restore_of(p, "ingest");
+        assert_eq!(got, kind);
+        assert_eq!(
+            actions.last(),
+            Some(&Action::ClearReaperState {
+                restore_reconcile: None,
+                last_counted_job: Some("ingest-9".into()),
+            })
+        );
+        assert_eq!(d.run_history, None, "{kind:?}");
+    }
+
+    #[test]
+    fn every_restore_of_a_rate_reap_drops_the_history() {
+        let mut c = reaped_flaky(true);
+        c.reaper_annotations.insert(RESTORE.into(), "true".into());
+        assert_clean_restore(&run(snapshot(), vec![c]), RestoreKind::Requested);
+
+        let c = reaped_flaky(false);
+        assert_clean_restore(&run(snapshot(), vec![c]), RestoreKind::ManualResume);
+
+        let mut c = reaped_flaky(true);
+        c.mode_annotation = Some("off".into());
+        assert_clean_restore(&run(snapshot(), vec![c]), RestoreKind::OptedOut);
+
+        // The HelmRelease the reaper suspended for it was resumed.
+        let mut snap = snapshot();
+        let mut hr = helm_release("helm", "app");
+        hr.reaper_annotations.insert(
+            crate::record::HELD_FOR.into(),
+            r#"["CronJob/app/ingest"]"#.into(),
+        );
+        hr.reaper_annotations
+            .insert(crate::record::SUSPENDED_BY_REAPER.into(), "true".into());
+        snap.helm_releases.insert(hr.helm_release.clone(), hr);
+        let mut c = reaped_flaky(true);
+        c.flux.helm_release = Some(NsName::new("helm", "app"));
+        c.reaper_annotations
+            .insert(HELMRELEASE.into(), "helm/app".into());
+        assert_clean_restore(&run(snap, vec![c]), RestoreKind::ManualResume);
+    }
+
+    /// `app/ingest` as the restore left it: only `last-failed-job`, with the
+    /// Jobs from before the restore still listed.
+    fn restored_flaky() -> WorkloadView {
+        let mut c = reaped_flaky(false);
+        c.state_label = None;
+        c.reaper_annotations.clear();
+        c.reaper_annotations
+            .insert(LAST_FAILED_JOB.into(), "ingest-9".into());
+        c
+    }
+
+    #[test]
+    fn jobs_from_before_a_restore_are_not_recorded_again() {
+        let p = run(snapshot(), vec![restored_flaky()]);
+        assert_eq!(p.decisions, Vec::<Decision>::new());
+    }
+
+    #[test]
+    fn the_first_failure_after_a_restore_starts_a_one_run_history() {
+        let mut c = restored_flaky();
+        cron_mut(&mut c).jobs.push(failed_job("ingest-10", 0));
+        let p = run(snapshot(), vec![c]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        let h = d.run_history.as_ref().expect("a new history");
+        assert_eq!(h.since, NOW);
+        assert_eq!(h.runs.len(), 1, "{h:?}");
+        assert_eq!(h.runs[0].job.as_deref(), Some("ingest-10"));
+    }
+
+    #[test]
+    fn a_history_is_forgotten_when_the_reaper_stops_watching() {
+        let forgotten = |p: &CyclePlan, case: &str| {
+            let d = only(p);
+            assert_eq!(d.plan, Plan::Forget, "{case}");
+            assert_eq!(d.run_history, None, "{case}");
+        };
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.mode_annotation = Some("off".into());
+        forgotten(&run(snapshot(), vec![c]), "mode=off");
+
+        let mut config = Config::default();
+        config.cron_jobs.enabled = false;
+        let mut snap = snapshot();
+        snap.workloads = vec![flaky_cron("FFSFFFFSFF")];
+        forgotten(&decide(&snap, &config), "cronJobs.enabled: false");
+
+        let mut c = flaky_cron("FFSFFFFSFF");
+        cron_mut(&mut c).suspended = true;
+        forgotten(&run(snapshot(), vec![c]), "suspended by someone else");
     }
 }

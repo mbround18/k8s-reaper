@@ -1701,6 +1701,10 @@ mod tests {
         let mut snap = failing_cron(Some("reaped"), 400);
         let c = &mut snap.workloads[0];
         c.reaper_annotations.insert(RESTORE.into(), "true".into());
+        c.reaper_annotations.insert(
+            crate::record::RUN_HISTORY.into(),
+            r#"{"since":"2026-10-12T00:00:00Z","runs":[{"job":"ingest-2","at":"2026-10-12T00:00:00Z","ok":false}]}"#.into(),
+        );
         cron_mut(c).suspended = true;
         let r = run(&snap, Mode::Report);
         let calls = r.writer.calls();
@@ -1715,6 +1719,8 @@ mod tests {
         let p = patch(&calls[1]);
         assert_eq!(p.labels[STATE_LABEL], None);
         assert_eq!(p.annotations[FAILING_SINCE], None);
+        // A restore starts the history over (FR-012).
+        assert_eq!(p.annotations[crate::record::RUN_HISTORY], None);
         // Kept, so failures from before the restore are not counted again.
         assert_eq!(p.annotations[LAST_FAILED_JOB].as_deref(), Some("ingest-2"));
         assert_eq!(r.events.reasons(), ["Restored"]);
