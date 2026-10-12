@@ -8,7 +8,9 @@ are exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (OTel names use
 | --------------------------------------- | --------- | ---------------------------------------- | --------------------------------------------------------------------------------------- |
 | `reaper_workload_state`                 | gauge     | `namespace`, `kind`, `name`, `state`     | 1 for the workload's current state (`observed`, `candidate`, `reaping`, `reaped`); the series is removed when the state is cleared |
 | `reaper_workload_skipped`               | gauge     | `namespace`, `kind`, `name`, `reason`    | 1 while a candidate is skipped for `reason`                                              |
-| `reaper_workload_crashloop_seconds`     | gauge     | `namespace`, `kind`, `name`              | `now - crashloop-since` (`now - failing-since` for a CronJob)                           |
+| `reaper_workload_crashloop_seconds`     | gauge     | `namespace`, `kind`, `name`              | `now - crashloop-since`; for a CronJob, `now -` the earlier of `failing-since` and its run history's `since` |
+| `reaper_cronjob_window_runs`            | gauge     | `namespace`, `name`, `outcome`           | Recorded runs in the CronJob's window, by `outcome` ∈ `failed`, `succeeded`. Present while the CronJob has a run history; both series are removed when the history is removed |
+| `reaper_cronjob_rule`                   | gauge     | `namespace`, `name`, `rule`              | 1 while the CronJob is `candidate` and `rule` ∈ `streak`, `failure_rate` is met this cycle; two series when both are met. Removed when it stops being a candidate; once `reaped`, the `reason` annotation and the `Reaped` Event name the rule |
 | `reaper_actions_total`                  | counter   | `action`, `result`, `mode`               | `action` ∈ `reap`, `restore`, `scale`, `kustomize_disable`, `kustomize_restore`, `helmrelease_hold`, `helmrelease_release`, `cronjob_suspend`, `cronjob_resume`, `record`; `result` ∈ `success`, `error`, `planned` (report mode). `record` is a failed write of the reaper's own labels or annotations; only `result="error"` is ever emitted for it |
 | `reaper_cycles_total`                   | counter   | `result`                                 | `ok`, `error`                                                                           |
 | `reaper_cycle_duration_seconds`         | histogram | none                                     | decide + execute time; unit `seconds` (`# UNIT`), 12 exponential buckets from 0.05 s (×2, up to 102.4 s) |
@@ -22,6 +24,14 @@ are exported over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (OTel names use
 
 Cardinality: bounded by the number of workloads in a non-`none` state, a few
 dozen on the production cluster.
+
+The failure ratio of a CronJob's window is computed in PromQL rather than
+exported:
+
+```promql
+reaper_cronjob_window_runs{outcome="failed"}
+  / ignoring(outcome) sum without(outcome) (reaper_cronjob_window_runs)
+```
 
 ## Alert rules (shipped as a PrometheusRule by the chart)
 

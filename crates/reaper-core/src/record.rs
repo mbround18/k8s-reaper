@@ -344,10 +344,15 @@ impl WorkloadRecord {
         (record, errors)
     }
 
-    /// When the crash loop or failing streak began.
+    /// When the crash loop or failing streak began; for a CronJob, the
+    /// earlier of its streak and its run history (003 FR-007).
     #[must_use]
     pub fn since(&self) -> Option<Timestamp> {
-        self.crashloop_since.or(self.failing_since)
+        let history = self.run_history.as_ref().map(|h| h.since);
+        [self.crashloop_since.or(self.failing_since), history]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// The owned annotations (and state label) that represent this record.

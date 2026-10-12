@@ -20,8 +20,8 @@ use crate::plan::{
     Action, CyclePlan, Decision, Evidence, Plan, RestoreKind, SkipReason, Transition,
 };
 use crate::ports::{
-    ActionKind, ActionResult, ClusterWriter, EventRecord, EventSink, EventType, Telemetry,
-    WorkloadRow, WriteError,
+    ActionKind, ActionResult, ClusterWriter, CronRule, EventRecord, EventSink, EventType,
+    Telemetry, WorkloadRow, WriteError,
 };
 use crate::record::{
     FLUX_RECONCILE, FLUX_RECONCILE_DISABLED, HELMRELEASE, LAST_FAILED_JOB, MetadataPatch,
@@ -917,11 +917,34 @@ fn rows(
                 }
                 _ => None,
             };
+            let decided = decision.filter(|_| written.contains_key(&w.workload));
+            let history = match decided {
+                Some(d) => d.run_history.as_ref(),
+                None => record.run_history.as_ref(),
+            };
+            let rules = match decided.and_then(|d| d.evidence.as_ref()) {
+                Some(Evidence::JobFailures {
+                    streak_met, rate, ..
+                }) if state == State::Candidate => [
+                    (*streak_met, CronRule::Streak),
+                    (rate.is_some_and(|r| r.met), CronRule::FailureRate),
+                ]
+                .into_iter()
+                .filter_map(|(met, rule)| met.then_some(rule))
+                .collect(),
+                _ => Vec::new(),
+            };
             Some(WorkloadRow {
                 workload: w.workload.clone(),
                 state,
                 skipped,
                 crashloop_seconds: since.map(|t| snap.now.seconds_since(t)),
+                window_runs: history.map(|h| {
+                    let failed = h.failed();
+                    let runs = u32::try_from(h.runs.len()).unwrap_or(u32::MAX);
+                    (failed, runs - failed)
+                }),
+                rules,
             })
         })
         .collect()
@@ -1783,6 +1806,33 @@ mod tests {
             reason(&cron_decision(7, true, true)),
             format!("8 of last 10 runs failed; 7 failed runs since {since}, {tail}")
         );
+    }
+
+    // Spec 003 US5: the window and rule gauges' rows (T250).
+
+    fn only_row(r: &Run) -> WorkloadRow {
+        let rows = r.telemetry.rows.lock().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:#?}");
+        rows[0].clone()
+    }
+
+    #[test]
+    fn a_rate_candidate_row_carries_its_window_and_rule() {
+        let row = only_row(&run(&flaky("FFSFFFFSFF"), Mode::Report));
+        assert_eq!(row.state, State::Candidate);
+        assert_eq!(row.window_runs, Some((8, 2)));
+        assert_eq!(row.rules, [CronRule::FailureRate]);
+        // The history began before the two-run streak.
+        assert_eq!(row.crashloop_seconds, Some(7 * 3600));
+    }
+
+    #[test]
+    fn a_reaped_cron_row_keeps_its_window_and_names_no_rule() {
+        let row = only_row(&run(&flaky("FFSFFFFSFF"), Mode::Full));
+        assert_eq!(row.state, State::Reaped);
+        assert_eq!(row.window_runs, Some((8, 2)));
+        assert_eq!(row.rules, []);
+        assert_eq!(row.crashloop_seconds, Some(7 * 3600));
     }
 
     #[test]

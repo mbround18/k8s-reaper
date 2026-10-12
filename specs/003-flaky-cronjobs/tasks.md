@@ -381,7 +381,7 @@ quickstart §3.
 
 ### Tests first
 
-- [ ] T250 [P] [US5] Write unit tests in
+- [X] T250 [P] [US5] Write unit tests in
   `crates/reaper-observability/src/telemetry.rs`:
   - **Window gauge.** With a history, `reaper_cronjob_window_runs{namespace,
     name, outcome="failed"|"succeeded"}` holds the counts. Both series are
@@ -392,12 +392,12 @@ quickstart §3.
   - **Existing metrics.** The existing metric label sets are unchanged.
   - **Crash-loop seconds.** `reaper_workload_crashloop_seconds` for a
     CronJob uses the earlier of the streak start and `history.since`.
-- [ ] T251 [P] [US5] Write unit tests in `crates/reaper-core/src/decide.rs`:
+- [X] T251 [P] [US5] Write unit tests in `crates/reaper-core/src/decide.rs`:
   - an unreadable `run-history` gives an `InvalidSetting{key: run-history}`,
     so a `ConfigInvalid` Event is raised, and the history is treated as
     empty (FR-014);
   - the next write replaces the bad value.
-- [ ] T252 [P] [US5] Extend the contracts-drift test in
+- [X] T252 [P] [US5] Extend the contracts-drift test in
   `apps/k8s-reaper/tests/contracts.rs` so that each of these named in
   `specs/001-crashloop-reaper/contracts/{metrics,annotations}.md` must exist
   in code:
@@ -408,12 +408,12 @@ quickstart §3.
 
 ### Implementation
 
-- [ ] T253 [US5] Register and maintain the two gauges in
+- [X] T253 [US5] Register and maintain the two gauges in
   `crates/reaper-observability/src/telemetry.rs`. Feed them from the cycle
   plan's `Evidence::JobFailures.rate` and from the rules met, and remove
   their series as the existing per-workload gauges are removed. This makes
   T250 pass.
-- [ ] T254 [US5] In `decide()` in `crates/reaper-core/src/decide.rs`, map
+- [X] T254 [US5] In `decide()` in `crates/reaper-core/src/decide.rs`, map
   `DecodeError`s for `run-history` to `InvalidSetting`, which the existing
   `ConfigInvalid` emission reports. This makes T251 pass.
 - [ ] T255 [US5] Extend quickstart §3 (every run succeeds, the

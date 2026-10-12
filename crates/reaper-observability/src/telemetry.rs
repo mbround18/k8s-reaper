@@ -52,6 +52,20 @@ struct WorkloadLabels {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct WindowLabels {
+    namespace: String,
+    name: String,
+    outcome: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct RuleLabels {
+    namespace: String,
+    name: String,
+    rule: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct StateLabels {
     namespace: String,
     kind: String,
@@ -119,6 +133,8 @@ struct Emitted {
     state: HashSet<StateLabels>,
     skipped: HashSet<SkippedLabels>,
     crashloop: HashSet<WorkloadLabels>,
+    window: HashSet<WindowLabels>,
+    rules: HashSet<RuleLabels>,
 }
 
 impl Emitted {
@@ -140,12 +156,41 @@ impl Emitted {
                     reason: reason.as_str().to_owned(),
                 });
             }
+            for (outcome, _) in window_runs(row) {
+                out.window.insert(WindowLabels {
+                    namespace: w.namespace.clone(),
+                    name: w.name.clone(),
+                    outcome,
+                });
+            }
+            for rule in &row.rules {
+                out.rules.insert(RuleLabels {
+                    namespace: w.namespace.clone(),
+                    name: w.name.clone(),
+                    rule: rule.as_str(),
+                });
+            }
             if row.crashloop_seconds.is_some() {
                 out.crashloop.insert(w);
             }
         }
         out
     }
+}
+
+/// A CronJob's window counts by `outcome`, if it has a run history.
+fn window_runs(row: &WorkloadRow) -> impl Iterator<Item = (&'static str, u32)> {
+    row.window_runs
+        .into_iter()
+        .flat_map(|(failed, succeeded)| [("failed", failed), ("succeeded", succeeded)])
+}
+
+fn cron_attrs(row: &WorkloadRow, key: &'static str, value: &'static str) -> Vec<KeyValue> {
+    vec![
+        KeyValue::new("namespace", row.workload.namespace.clone()),
+        KeyValue::new("name", row.workload.name.clone()),
+        KeyValue::new(key, value),
+    ]
 }
 
 fn workload_labels(row: &WorkloadRow) -> WorkloadLabels {
@@ -174,6 +219,8 @@ struct Otel {
     _workload_state: ObservableGauge<u64>,
     _workload_skipped: ObservableGauge<u64>,
     _crashloop_seconds: ObservableGauge<i64>,
+    _window_runs: ObservableGauge<u64>,
+    _rule: ObservableGauge<u64>,
     actions: OtelCounter<u64>,
     cycles: OtelCounter<u64>,
     cycle_duration: OtelHistogram<f64>,
@@ -229,6 +276,7 @@ impl Otel {
                 }
             })
             .build();
+        let (window_runs_gauge, rule) = cron_job_gauges(&meter, rows);
         let c = Arc::clone(channels);
         let notification_channels = meter
             .u64_observable_gauge("reaper.notification.channels")
@@ -265,6 +313,8 @@ impl Otel {
             _workload_state: workload_state,
             _workload_skipped: workload_skipped,
             _crashloop_seconds: crashloop_seconds,
+            _window_runs: window_runs_gauge,
+            _rule: rule,
             actions: meter.u64_counter("reaper.actions").build(),
             cycles: meter.u64_counter("reaper.cycles").build(),
             cycle_duration: meter
@@ -282,6 +332,37 @@ impl Otel {
             _unowned_pods: unowned_pods,
         }
     }
+}
+
+/// The CronJob gauges: the runs in each window, and the rules a candidate
+/// meets.
+fn cron_job_gauges(
+    meter: &opentelemetry::metrics::Meter,
+    rows: &Arc<Mutex<Vec<WorkloadRow>>>,
+) -> (ObservableGauge<u64>, ObservableGauge<u64>) {
+    let r = Arc::clone(rows);
+    let window_runs_gauge = meter
+        .u64_observable_gauge("reaper.cronjob.window.runs")
+        .with_callback(move |o| {
+            for row in lock(&r).iter() {
+                for (outcome, n) in window_runs(row) {
+                    o.observe(u64::from(n), &cron_attrs(row, "outcome", outcome));
+                }
+            }
+        })
+        .build();
+    let r = Arc::clone(rows);
+    let rule = meter
+        .u64_observable_gauge("reaper.cronjob.rule")
+        .with_callback(move |o| {
+            for row in lock(&r).iter() {
+                for rule in &row.rules {
+                    o.observe(1, &cron_attrs(row, "rule", rule.as_str()));
+                }
+            }
+        })
+        .build();
+    (window_runs_gauge, rule)
 }
 
 /// A label-less gauge with no sample until it is first set. A `Family` with
@@ -331,6 +412,8 @@ pub struct Metrics {
     workload_state: Family<StateLabels, Gauge>,
     workload_skipped: Family<SkippedLabels, Gauge>,
     crashloop_seconds: Family<WorkloadLabels, Gauge>,
+    window_runs: Family<WindowLabels, Gauge>,
+    cronjob_rule: Family<RuleLabels, Gauge>,
     actions: Family<ActionLabels, Counter>,
     cycles: Family<CycleLabels, Counter>,
     cycle_duration: Histogram,
@@ -371,6 +454,8 @@ impl Metrics {
             workload_state: Family::default(),
             workload_skipped: Family::default(),
             crashloop_seconds: Family::default(),
+            window_runs: Family::default(),
+            cronjob_rule: Family::default(),
             actions: Family::default(),
             cycles: Family::default(),
             cycle_duration: Histogram::new(exponential_buckets(0.05, 2.0, 12)),
@@ -395,21 +480,7 @@ impl Metrics {
             })
             .set(1);
 
-        registry.register(
-            "reaper_workload_state",
-            "1 for the workload's current state",
-            metrics.workload_state.clone(),
-        );
-        registry.register(
-            "reaper_workload_skipped",
-            "1 while a candidate is skipped for reason",
-            metrics.workload_skipped.clone(),
-        );
-        registry.register(
-            "reaper_workload_crashloop_seconds",
-            "Seconds since crashloop-since (failing-since for a CronJob)",
-            metrics.crashloop_seconds.clone(),
-        );
+        metrics.register_workloads(registry);
         registry.register(
             "reaper_actions",
             "Reap and restore steps",
@@ -454,6 +525,35 @@ impl Metrics {
         );
         registry.register("reaper_build_info", "Build version", build_info);
         metrics
+    }
+
+    /// Registers the per-workload families.
+    fn register_workloads(&self, registry: &mut Registry) {
+        registry.register(
+            "reaper_workload_state",
+            "1 for the workload's current state",
+            self.workload_state.clone(),
+        );
+        registry.register(
+            "reaper_workload_skipped",
+            "1 while a candidate is skipped for reason",
+            self.workload_skipped.clone(),
+        );
+        registry.register(
+        "reaper_workload_crashloop_seconds",
+        "Seconds since crashloop-since (for a CronJob, the earlier of failing-since and its run history)",
+        self.crashloop_seconds.clone(),
+    );
+        registry.register(
+            "reaper_cronjob_window_runs",
+            "Recorded runs in the CronJob's window, by outcome",
+            self.window_runs.clone(),
+        );
+        registry.register(
+            "reaper_cronjob_rule",
+            "1 for each rule a candidate CronJob meets",
+            self.cronjob_rule.clone(),
+        );
     }
 
     /// Records a finished cycle: its result, duration and finish time.
@@ -565,6 +665,15 @@ impl Telemetry for Metrics {
         for gone in emitted.crashloop.difference(&next.crashloop) {
             self.crashloop_seconds.remove(gone);
         }
+        for gone in emitted.window.difference(&next.window) {
+            self.window_runs.remove(gone);
+        }
+        for gone in emitted.rules.difference(&next.rules) {
+            self.cronjob_rule.remove(gone);
+        }
+        for labels in &next.rules {
+            self.cronjob_rule.get_or_create(labels).set(1);
+        }
         for labels in &next.state {
             self.workload_state.get_or_create(labels).set(1);
         }
@@ -572,6 +681,15 @@ impl Telemetry for Metrics {
             self.workload_skipped.get_or_create(labels).set(1);
         }
         for row in rows {
+            for (outcome, n) in window_runs(row) {
+                self.window_runs
+                    .get_or_create(&WindowLabels {
+                        namespace: row.workload.namespace.clone(),
+                        name: row.workload.name.clone(),
+                        outcome,
+                    })
+                    .set(i64::from(n));
+            }
             if let Some(secs) = row.crashloop_seconds {
                 self.crashloop_seconds
                     .get_or_create(&workload_labels(row))
@@ -607,6 +725,7 @@ mod tests {
 
     use reaper_core::model::{WorkloadKind, WorkloadRef};
     use reaper_core::plan::SkipReason;
+    use reaper_core::ports::CronRule;
     use reaper_core::record::State;
 
     use super::*;
@@ -649,8 +768,53 @@ mod tests {
             &["channel", "provider", "valid"],
         ),
         ("reaper_unowned_crashlooping_pods", "gauge", &["namespace"]),
+        (
+            "reaper_cronjob_window_runs",
+            "gauge",
+            &["namespace", "name", "outcome"],
+        ),
+        (
+            "reaper_cronjob_rule",
+            "gauge",
+            &["namespace", "name", "rule"],
+        ),
         ("reaper_build_info", "gauge", &["version", "git_sha"]),
     ];
+
+    /// The 001 metrics contract, which CONTRACT must match (spec 003 T252).
+    const METRICS_MD: &str =
+        include_str!("../../../specs/001-crashloop-reaper/contracts/metrics.md");
+
+    /// Name, type and sorted labels of each row of the metrics table.
+    fn documented() -> Shape {
+        METRICS_MD
+            .lines()
+            .filter_map(|line| {
+                let cells: Vec<&str> = line
+                    .trim()
+                    .strip_prefix('|')?
+                    .split('|')
+                    .map(str::trim)
+                    .collect();
+                let name = cells.first()?.strip_prefix("`reaper_")?.strip_suffix('`')?;
+                let mut labels: Vec<String> = cells
+                    .get(2)?
+                    .split(',')
+                    .filter_map(|l| Some(l.trim().strip_prefix('`')?.strip_suffix('`')?.to_owned()))
+                    .collect();
+                labels.sort();
+                Some((
+                    format!("reaper_{name}"),
+                    ((*cells.get(1)?).to_owned(), labels),
+                ))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_contract_list_is_the_documented_one() {
+        assert_eq!(documented(), contract());
+    }
 
     type Shape = BTreeMap<String, (String, Vec<String>)>;
 
@@ -737,6 +901,17 @@ mod tests {
             state,
             skipped,
             crashloop_seconds: Some(600),
+            window_runs: None,
+            rules: Vec::new(),
+        }
+    }
+
+    /// `apps/backup`, a CronJob with 8 of 10 runs failed, meeting `rules`.
+    fn flaky_row(state: State, rules: &[CronRule]) -> WorkloadRow {
+        WorkloadRow {
+            window_runs: Some((8, 2)),
+            rules: rules.to_vec(),
+            ..row(WorkloadKind::CronJob, "backup", state, None)
         }
     }
 
@@ -819,12 +994,6 @@ mod tests {
     #[test]
     fn exposition_has_exactly_the_contracted_metrics() {
         let (registry, metrics) = metrics();
-        metrics.workloads(&[row(
-            WorkloadKind::Deployment,
-            "web",
-            State::Candidate,
-            Some(SkipReason::RateLimited),
-        )]);
         metrics.action(ActionKind::Scale, ActionResult::Planned, Mode::Report);
         metrics.cycle(
             CycleResult::Ok,
@@ -836,6 +1005,15 @@ mod tests {
         metrics.notification("ops-discord", "discord", "sent");
         metrics.notification_channels(&[("ops-discord".into(), "discord".into(), true)]);
         metrics.unowned_pods(&[unowned("apps", "bare")]);
+        metrics.workloads(&[
+            row(
+                WorkloadKind::Deployment,
+                "web",
+                State::Candidate,
+                Some(SkipReason::RateLimited),
+            ),
+            flaky_row(State::Candidate, &[CronRule::FailureRate]),
+        ]);
 
         let body = encode(&registry);
         assert_eq!(shape(&body), contract(), "{body}");
@@ -910,6 +1088,59 @@ mod tests {
         metrics.workloads(&[]);
         let body = encode(&registry);
         assert!(!body.contains("name=\""), "{body}");
+    }
+
+    #[test]
+    fn a_cron_jobs_window_is_counted_until_its_history_is_gone() {
+        let (registry, metrics) = metrics();
+        metrics.workloads(&[flaky_row(State::Observed, &[])]);
+        let body = encode(&registry);
+        let series = |outcome: &str| {
+            format!(
+                r#"reaper_cronjob_window_runs{{namespace="apps",name="backup",outcome="{outcome}"}}"#
+            )
+        };
+        assert!(body.contains(&format!("{} 8", series("failed"))), "{body}");
+        assert!(
+            body.contains(&format!("{} 2", series("succeeded"))),
+            "{body}"
+        );
+
+        // SC-005: a restore removes the history, and both series with it.
+        metrics.workloads(&[row(WorkloadKind::CronJob, "backup", State::Observed, None)]);
+        let body = encode(&registry);
+        assert!(!body.contains("reaper_cronjob_window_runs{"), "{body}");
+    }
+
+    #[test]
+    fn a_candidate_names_each_rule_it_meets_until_it_is_reaped() {
+        let (registry, metrics) = metrics();
+        let series = |rule: &str| {
+            format!(r#"reaper_cronjob_rule{{namespace="apps",name="backup",rule="{rule}"}} 1"#)
+        };
+        metrics.workloads(&[flaky_row(
+            State::Candidate,
+            &[CronRule::Streak, CronRule::FailureRate],
+        )]);
+        let body = encode(&registry);
+        assert!(body.contains(&series("streak")), "{body}");
+        assert!(body.contains(&series("failure_rate")), "{body}");
+
+        metrics.workloads(&[flaky_row(State::Candidate, &[CronRule::FailureRate])]);
+        let body = encode(&registry);
+        assert!(!body.contains(&series("streak")), "{body}");
+        assert!(body.contains(&series("failure_rate")), "{body}");
+
+        metrics.workloads(&[flaky_row(State::Reaped, &[])]);
+        let body = encode(&registry);
+        assert!(!body.contains("reaper_cronjob_rule{"), "{body}");
+        // The other metrics keep their label sets.
+        assert!(
+            body.contains(
+                r#"reaper_workload_crashloop_seconds{namespace="apps",kind="CronJob",name="backup"} 600"#
+            ),
+            "{body}"
+        );
     }
 
     #[test]

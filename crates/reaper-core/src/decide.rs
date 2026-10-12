@@ -28,7 +28,7 @@ use crate::plan::{
 use crate::record::{
     CRASHLOOP_DURATION, FAILING_DURATION, FAILURE_RATE, FAILURE_THRESHOLD, FAILURE_WINDOW,
     FLUX_RECONCILE_DISABLED, HelmReleaseHold, MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE,
-    RunHistory, State, WorkloadRecord,
+    RUN_HISTORY, RunHistory, State, WorkloadRecord,
 };
 use crate::time::parse_duration;
 
@@ -79,7 +79,10 @@ pub fn decide(snap: &Snapshot, config: &Config) -> CyclePlan {
             let thresholds = Thresholds::for_workload(config, w, &mut invalid);
             Some(match &w.cron_job {
                 // CronJobs are decided from Jobs, not pods (US5).
-                Some(cron) => decide_cron_job(snap, config, w, cron, mode, &thresholds),
+                Some(cron) => {
+                    report_unreadable_history(w, &mut invalid);
+                    decide_cron_job(snap, config, w, cron, mode, &thresholds)
+                }
                 None => decide_workload(snap, config, w, pods.get(&w.workload), mode, &thresholds),
             })
         })
@@ -102,6 +105,20 @@ pub fn decide(snap: &Snapshot, config: &Config) -> CyclePlan {
         unsupported,
         invalid_settings: invalid.into_iter().collect(),
         stale_holds: stale_holds(snap),
+    }
+}
+
+/// A `run-history` the reaper cannot read is reported and treated as empty;
+/// the next write replaces it (003 FR-014).
+fn report_unreadable_history(w: &WorkloadView, invalid: &mut BTreeSet<InvalidSetting>) {
+    if let Some(v) = w.reaper_annotations.get(RUN_HISTORY)
+        && RunHistory::decode(v).is_none()
+    {
+        invalid.insert(InvalidSetting {
+            object: w.workload.object_ref(),
+            key: RUN_HISTORY.into(),
+            value: v.clone(),
+        });
     }
 }
 
@@ -190,9 +207,9 @@ fn out_of_scope(snap: &Snapshot, w: &WorkloadView) -> Option<Decision> {
     let plan = held_plan(snap, w, &record, Mode::Off);
     Some(Decision {
         workload: w.workload.clone(),
+        since: record.since(),
         run_history: kept_history(&plan, record.run_history),
         plan,
-        since: record.crashloop_since.or(record.failing_since),
         healthy_since: None,
         evidence: None,
     })
@@ -443,15 +460,19 @@ fn decide_cron_job(
         evidence,
         run_history,
     };
-    let has_state =
+    let tracked =
         record.state.is_some() || record.failing_since.is_some() || record.run_history.is_some();
+    // An unreadable history is still there to be removed (FR-014).
+    let has_state =
+        tracked || (w.reaper_annotations.contains_key(RUN_HISTORY) && record.run_history.is_none());
 
     match record.state {
         // Restore keeps working with `cronJobs.enabled: false` (FR-033).
         Some(State::Reaped | State::Reaping) => {
             let plan = held_plan(snap, w, &record, mode);
+            let since = record.since();
             let history = kept_history(&plan, record.run_history);
-            return decision(plan, record.failing_since, None, history);
+            return decision(plan, since, None, history);
         }
         _ if record.restore && mode != Mode::Off => {
             return decision(Plan::RestoreIgnored, None, None, None);
@@ -491,7 +512,7 @@ fn decide_cron_job(
         // Turning the rule off is not a recovery: drop its history quietly.
         let plan = if !has_state {
             Plan::Nothing
-        } else if thresholds.failure_rate_enabled || record.failing_since.is_some() {
+        } else if tracked && (thresholds.failure_rate_enabled || record.failing_since.is_some()) {
             Plan::Recover
         } else {
             Plan::Forget
@@ -2432,5 +2453,45 @@ mod tests {
         let mut c = flaky_cron("FFSFFFFSFF");
         cron_mut(&mut c).suspended = true;
         forgotten(&run(snapshot(), vec![c]), "suspended by someone else");
+    }
+
+    // Spec 003 US5: an unreadable history is reported (T251).
+
+    fn with_bad_history(mut c: WorkloadView) -> WorkloadView {
+        c.reaper_annotations
+            .insert(RUN_HISTORY.into(), "not json".into());
+        c
+    }
+
+    fn reported_bad_history(p: &CyclePlan) {
+        let bad: Vec<_> = p
+            .invalid_settings
+            .iter()
+            .map(|s| (s.key.as_str(), s.value.as_str()))
+            .collect();
+        assert_eq!(bad, [(RUN_HISTORY, "not json")]);
+    }
+
+    #[test]
+    fn an_unreadable_history_is_reported_and_started_over() {
+        let c = with_bad_history(failing_cron("ingest", &[3]));
+        let p = run(snapshot(), vec![c]);
+        reported_bad_history(&p);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        // The decision's history replaces the bad value when it is written.
+        let h = d.run_history.as_ref().expect("a new history");
+        assert_eq!(h.runs.len(), 1, "{h:?}");
+    }
+
+    #[test]
+    fn an_unreadable_history_with_nothing_failing_is_forgotten() {
+        let mut c = with_bad_history(cron_job("app", "ingest"));
+        cron_mut(&mut c).jobs = vec![succeeded_job("ingest-0", 3)];
+        let p = run(snapshot(), vec![c]);
+        reported_bad_history(&p);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Forget);
+        assert_eq!(d.run_history, None);
     }
 }
