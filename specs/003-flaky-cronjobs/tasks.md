@@ -128,7 +128,7 @@ and Job deletion, and infers unseen successes only.
 
 ### Tests first
 
-- [ ] T210 [US2] Write unit tests for `update_history` in
+- [X] T210 [US2] Write unit tests for `update_history` in
   `crates/reaper-core/src/detect.rs`, with a builder for `CronJobView`
   sequences. Each test asserts the exact `Option<RunHistory>` after each
   call. Cover these cases:
@@ -168,13 +168,13 @@ and Job deletion, and infers unseen successes only.
 
 ### Implementation
 
-- [ ] T211 [US2] Implement `pub fn update_history(prev:
+- [X] T211 [US2] Implement `pub fn update_history(prev:
   Option<RunHistory>, cron: &CronJobView, streak: &JobStreak, window_runs:
   u32) -> Option<RunHistory>` in `crates/reaper-core/src/detect.rs`, by the
   five steps in data-model.md. Reuse the `(finished_at, name)` ordering
   that `job_streak` uses. It must be total and must not panic on an empty
   `jobs`. This makes T210 pass.
-- [ ] T212 [US2] Add a property-style deterministic test in
+- [X] T212 [US2] Add a property-style deterministic test in
   `crates/reaper-core/src/detect.rs`. It uses a fixed, seedless table of 50
   cycle sequences mixing every case in T210. For each sequence it asserts
   that no Job name appears twice in `runs` and that `runs` stays strictly
