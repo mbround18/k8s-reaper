@@ -10,8 +10,11 @@
 //! a streak long enough for the streak rule. Its own namespace keeps the
 //! `cron` fixtures out of the story's scope. Scoped to it, in report mode with
 //! `windowRuns: 5` and `threshold: 80%`, the reaper records each run once and
-//! plans the reap on the rate; in full mode it suspends the CronJob. The
-//! story restores and deletes the CronJob and puts the ReaperConfig back.
+//! plans the reap on the rate, and per-CronJob annotations only raise the
+//! window (quickstart §4). In full mode it suspends the CronJob; a restore
+//! starts its history over (§2 step 6). Once every run succeeds, nothing is
+//! left on it (§3). The story deletes the CronJob and puts the ReaperConfig
+//! back.
 
 mod common;
 mod full;
@@ -21,12 +24,12 @@ use std::time::{Duration, Instant};
 
 use full::{FullMode, POLL, annotation, set_mode, state};
 use k8s_openapi::api::batch::v1::CronJob;
-use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::api::core::v1::{Namespace, Pod};
 use k8s_openapi::api::events::v1::Event;
 use k8s_openapi::jiff;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::{Api, Client};
-use reaper_core::record::{RESTORE, RUN_HISTORY, RunHistory};
+use reaper_core::record::{FAILED_RUNS, FAILING_SINCE, RESTORE, RUN_HISTORY, RunHistory};
 use serde_json::json;
 
 const NS: &str = "cron-rate";
@@ -40,6 +43,11 @@ const WITHIN: Duration = Duration::from_secs(2 * 15 + 45);
 /// The reason's rate clause (contracts/annotations.md); one run in five
 /// succeeds, so the window holds 4 failures.
 const RATE_CLAUSE: &str = "4 of last 5 runs failed";
+/// Time for the CronJob's next run (or the next failure, one run in five
+/// being a success) to land and be seen.
+const NEXT_RUN: Duration = Duration::from_mins(2);
+const FAILURE_WINDOW: &str = "reaper.boop.ninja/failure-window";
+const FAILURE_RATE: &str = "reaper.boop.ninja/failure-rate";
 
 fn cron_jobs(client: &Client) -> Api<CronJob> {
     Api::namespaced(client.clone(), NS)
@@ -76,6 +84,97 @@ fn assert_well_formed(h: &RunHistory, seen: &mut BTreeSet<String>) {
         assert!(job.starts_with(NAME), "not one of {NAME}'s Jobs: {job}");
         seen.insert(job.to_owned());
     }
+}
+
+/// Sets (`Some`) or removes (`None`) annotations on the CronJob.
+async fn annotate(client: &Client, annotations: &[(&str, Option<&str>)]) {
+    let annotations: serde_json::Map<_, _> = annotations
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), json!(v)))
+        .collect();
+    let patch = json!({ "metadata": { "annotations": annotations } });
+    cron_jobs(client)
+        .patch(NAME, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .unwrap();
+}
+
+/// Polls the CronJob until `done` holds, failing after `deadline`.
+async fn until(
+    client: &Client,
+    deadline: Duration,
+    what: &str,
+    done: impl Fn(&CronJob) -> bool,
+) -> CronJob {
+    let started = Instant::now();
+    loop {
+        let c = get(client).await;
+        if done(&c) {
+            return c;
+        }
+        assert!(
+            started.elapsed() < deadline,
+            "{NS}/{NAME} never {what} (state {:?}, history {:?})",
+            state(&c),
+            annotation(&c, RUN_HISTORY)
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+fn is_candidate(c: &CronJob) -> bool {
+    state(c).as_deref() == Some("candidate")
+}
+
+fn runs(c: &CronJob) -> usize {
+    history(c).map_or(0, |h| h.runs.len())
+}
+
+/// The reaper's `/metrics` lines about this CronJob, through the API
+/// server's pod proxy.
+async fn series(client: &Client) -> Vec<String> {
+    let pods: Api<Pod> = Api::namespaced(client.clone(), "k8s-reaper");
+    let pod = pods
+        .list(&ListParams::default().labels("app.kubernetes.io/name=k8s-reaper"))
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|p| p.metadata.deletion_timestamp.is_none())
+        .max_by_key(|p| p.metadata.creation_timestamp.clone())
+        .expect("the reaper is running");
+    let request = http::Request::get(format!(
+        "/api/v1/namespaces/k8s-reaper/pods/{}:8080/proxy/metrics",
+        pod.metadata.name.unwrap()
+    ))
+    .body(Vec::new())
+    .unwrap();
+    let text = client.request_text(request).await.unwrap();
+    let ours = format!("namespace=\"{NS}\",name=\"{NAME}\"");
+    text.lines()
+        .filter(|l| l.starts_with("reaper_cronjob_") && l.contains(&ours))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// How many times an Event with this reason was emitted about the CronJob
+/// at or after `since`, counting a series once per occurrence.
+async fn emitted(client: &Client, reason: &str, since: jiff::Timestamp) -> i32 {
+    let events: Api<Event> = Api::namespaced(client.clone(), NS);
+    events
+        .list(&ListParams::default())
+        .await
+        .unwrap()
+        .items
+        .iter()
+        .filter(|e| {
+            let regarding = e.regarding.as_ref();
+            e.reason.as_deref() == Some(reason)
+                && regarding.and_then(|r| r.name.as_deref()) == Some(NAME)
+                && e.event_time.as_ref().is_some_and(|t| t.0 >= since)
+        })
+        .map(|e| e.series.as_ref().map_or(1, |s| s.count))
+        .sum()
 }
 
 /// A moment just before a change, allowing for the API server truncating
@@ -185,40 +284,19 @@ fn cron_job() -> CronJob {
     .unwrap()
 }
 
-#[tokio::test]
-#[ignore = "needs the dev cluster with the reaper running (make dev-kind dev-run)"]
-async fn a_cron_job_that_fails_most_runs_is_suspended() {
-    let client = common::dev_client().await;
-    fresh_namespace(&client).await;
-    let config = FullMode::enter_in(
-        &client,
-        "report",
-        &json!({
-            "cycleInterval": "15s",
-            "scope": { "includeNamespaces": [NS] },
-            "detection": { "crashLoopDuration": "168h", "minRestarts": 10_000 },
-            "cronJobs": {
-                "enabled": true,
-                "failingDuration": "10m",
-                "minFailedRuns": 3,
-                "failureRate": { "enabled": true, "windowRuns": WINDOW_RUNS, "threshold": "80%" },
-            },
-            "limits": { "maxReapsPerCycle": 1 },
-        }),
-    )
-    .await;
+/// Quickstart §2 steps 2–4: each run is recorded once, and the rate makes
+/// it a candidate in report mode without suspending it.
+async fn becomes_a_candidate_on_the_rate(client: &Client) {
     let since = before();
-    cron_jobs(&client)
+    cron_jobs(client)
         .create(&PostParams::default(), &cron_job())
         .await
         .unwrap();
 
-    // Scenarios 1 and 3: each run is recorded once, and the rate makes it a
-    // candidate in report mode without suspending it.
     let started = Instant::now();
     let mut seen = BTreeSet::new();
     let c = loop {
-        let c = get(&client).await;
+        let c = get(client).await;
         if let Some(h) = history(&c) {
             assert_well_formed(&h, &mut seen);
         }
@@ -242,14 +320,54 @@ async fn a_cron_job_that_fails_most_runs_is_suspended() {
         seen.len() >= WINDOW_RUNS - 1,
         "too few Jobs recorded: {seen:?}"
     );
-    expect_event(&client, "ReapPlanned", RATE_CLAUSE, since).await;
+    expect_event(client, "ReapPlanned", RATE_CLAUSE, since).await;
+    let rule = format!(
+        "reaper_cronjob_rule{{namespace=\"{NS}\",name=\"{NAME}\",rule=\"failure_rate\"}} 1"
+    );
+    let lines = series(client).await;
+    assert!(lines.contains(&rule), "no {rule} in {lines:?}");
+}
 
-    // Scenario 2 (SC-006): full mode suspends it, naming the rate.
+/// Quickstart §4, while it is a candidate: an annotation only raises the
+/// window.
+async fn a_window_override_only_raises_it(client: &Client) {
+    // A window below the cluster's is ignored, and quietly.
     let since = before();
-    set_mode(&client, "full").await;
+    annotate(client, &[(FAILURE_WINDOW, Some("3"))]).await;
+    tokio::time::sleep(WITHIN).await;
+    let c = get(client).await;
+    assert_eq!(runs(&c), WINDOW_RUNS, "failure-window=3 shrank the window");
+    assert!(
+        !event(client, "ConfigInvalid", FAILURE_WINDOW, since).await,
+        "failure-window=3 was reported invalid"
+    );
+
+    // A larger window must fill before it is judged.
+    annotate(client, &[(FAILURE_WINDOW, Some("8"))]).await;
+    let c = until(client, NEXT_RUN + WITHIN, "grew past 5 runs", |c| {
+        runs(c) > WINDOW_RUNS
+    })
+    .await;
+    assert!(
+        !is_candidate(&c),
+        "a candidate on a window of 8 not yet full"
+    );
+
+    // Without it, the window is 5 again and the rate is met again.
+    annotate(client, &[(FAILURE_WINDOW, None)]).await;
+    until(client, 2 * NEXT_RUN + WITHIN, "a candidate again", |c| {
+        is_candidate(c) && runs(c) == WINDOW_RUNS
+    })
+    .await;
+}
+
+/// Quickstart §2 step 5 (SC-006): full mode suspends it, naming the rate.
+async fn full_mode_suspends_it(client: &Client) {
+    let since = before();
+    set_mode(client, "full").await;
     let started = Instant::now();
     loop {
-        let c = get(&client).await;
+        let c = get(client).await;
         if suspended(&c) && state(&c).as_deref() == Some("reaped") {
             break;
         }
@@ -262,19 +380,111 @@ async fn a_cron_job_that_fails_most_runs_is_suspended() {
         );
         tokio::time::sleep(POLL).await;
     }
-    expect_event(&client, "Reaped", RATE_CLAUSE, since).await;
+    expect_event(client, "Reaped", RATE_CLAUSE, since).await;
+}
 
-    // Put it back and leave nothing behind.
+/// Quickstart §2 step 6: a restore starts the history over, and Jobs from
+/// before it are not recorded again.
+async fn a_restore_starts_over(client: &Client) {
     let patch = json!({ "metadata": { "annotations": { RESTORE: "now" } } });
-    cron_jobs(&client)
+    cron_jobs(client)
         .patch(NAME, &PatchParams::default(), &Patch::Merge(&patch))
         .await
         .unwrap();
-    let started = Instant::now();
-    while suspended(&get(&client).await) {
-        assert!(started.elapsed() < WITHIN, "{NS}/{NAME} not resumed");
-        tokio::time::sleep(Duration::from_secs(2)).await;
+    let c = until(client, WITHIN, "resumed", |c| !suspended(c)).await;
+
+    for key in [RUN_HISTORY, FAILING_SINCE, FAILED_RUNS] {
+        assert_eq!(annotation(&c, key), None, "{key} kept after the restore");
     }
+    let c = until(client, NEXT_RUN + WITHIN, "recorded a failure", |c| {
+        history(c).is_some()
+    })
+    .await;
+    assert_eq!(runs(&c), 1, "history after the restore: {:?}", history(&c));
+    assert!(!is_candidate(&c), "a candidate on one run");
+}
+
+/// Quickstart §4, after the restore: an unreadable window is reported, and
+/// turning the rule off for this CronJob drops its history.
+async fn bad_and_off_overrides(client: &Client) {
+    let since = before();
+    annotate(client, &[(FAILURE_WINDOW, Some("x"))]).await;
+    expect_event(
+        client,
+        "ConfigInvalid",
+        &format!("{FAILURE_WINDOW}=\"x\""),
+        since,
+    )
+    .await;
+    annotate(
+        client,
+        &[(FAILURE_WINDOW, None), (FAILURE_RATE, Some("off"))],
+    )
+    .await;
+    until(client, WITHIN, "dropped its history", |c| {
+        history(c).is_none()
+    })
+    .await;
+}
+
+/// Quickstart §3: once every run succeeds, the failures leave the window and
+/// nothing is left on the CronJob.
+async fn a_healthy_cron_job_carries_nothing(client: &Client) {
+    annotate(client, &[(FAILURE_RATE, None)]).await;
+    until(client, NEXT_RUN + WITHIN, "recorded a failure again", |c| {
+        history(c).is_some()
+    })
+    .await;
+    let since = before();
+    let healthy = json!({ "spec": { "jobTemplate": { "spec": { "template": { "spec": {
+        "containers": [{ "name": "app", "command": ["true"] }]
+    }}}}}});
+    cron_jobs(client)
+        .patch(NAME, &PatchParams::default(), &Patch::Strategic(&healthy))
+        .await
+        .unwrap();
+    let deadline = Duration::from_mins(WINDOW_RUNS as u64 + 2) + WITHIN;
+    let c = until(client, deadline, "let go", |c| {
+        history(c).is_none() && state(c).is_none()
+    })
+    .await;
+    assert_eq!(annotation(&c, FAILING_SINCE), None);
+    tokio::time::sleep(WITHIN).await;
+    assert_eq!(emitted(client, "JobFailuresRecovered", since).await, 1);
+    let lines = series(client).await;
+    assert!(lines.is_empty(), "series left for {NS}/{NAME}: {lines:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs the dev cluster with the reaper running (make dev-kind dev-run)"]
+async fn a_cron_job_that_fails_most_runs_is_suspended() {
+    let client = common::dev_client().await;
+    fresh_namespace(&client).await;
+    let client = common::dev_client().await;
+    fresh_namespace(&client).await;
+    let config = FullMode::enter_in(
+        &client,
+        "report",
+        &json!({
+            "cycleInterval": "15s",
+            "scope": { "includeNamespaces": [NS] },
+            "detection": { "crashLoopDuration": "168h", "minRestarts": 10_000 },
+            "cronJobs": {
+                "enabled": true,
+                "failingDuration": "10m",
+                "minFailedRuns": 3,
+                "failureRate": { "enabled": true, "windowRuns": WINDOW_RUNS, "threshold": "80%" },
+            },
+            "limits": { "maxReapsPerCycle": 1 },
+        }),
+    )
+    .await;
+    becomes_a_candidate_on_the_rate(&client).await;
+    a_window_override_only_raises_it(&client).await;
+    full_mode_suspends_it(&client).await;
+    a_restore_starts_over(&client).await;
+    bad_and_off_overrides(&client).await;
+    a_healthy_cron_job_carries_nothing(&client).await;
     drop(config);
     delete_cron_job(&client).await;
 }
