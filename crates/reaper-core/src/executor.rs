@@ -656,6 +656,7 @@ fn reason(d: &Decision) -> String {
         failed_runs,
         last_failed_job,
         last_failure_reason,
+        ..
     }) = &d.evidence
     {
         let _ = write!(s, "{failed_runs} failed runs");
@@ -775,6 +776,7 @@ fn note(d: &Decision, now: Timestamp) -> String {
         failed_runs,
         last_failed_job,
         last_failure_reason,
+        ..
     }) = &d.evidence
     {
         looping = "failing";

@@ -125,6 +125,27 @@ pub struct CronJobsSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 1000))]
     pub min_failed_runs: Option<i64>,
+    /// Also pause a CronJob that fails most of its recent runs, even with the odd success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_rate: Option<FailureRateSpec>,
+}
+
+const PERCENT_PATTERN: &str = "^(5[1-9]|[6-9][0-9]|100)%?$";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureRateSpec {
+    /// The failure-rate rule (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Finished runs in the window; it must be full before it is judged (3–100, default 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 3, max = 100))]
+    pub window_runs: Option<i64>,
+    /// Share of failed runs that makes a candidate, "80%" or "80" (51–100, default 80%).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = PERCENT_PATTERN))]
+    pub threshold: Option<String>,
 }
 
 /// Which transitions reach notification channels (US6). Channel URLs come
@@ -192,6 +213,7 @@ impl ReaperConfigSpec {
         let limits = self.limits.clone().unwrap_or_default();
         let flux = self.flux.clone().unwrap_or_default();
         let cron_jobs = self.cron_jobs.clone().unwrap_or_default();
+        let failure_rate = cron_jobs.failure_rate.clone().unwrap_or_default();
         let notifications = self.notifications.clone().unwrap_or_default();
         RawConfig {
             mode: Some(
@@ -214,6 +236,9 @@ impl ReaperConfigSpec {
             cron_jobs_enabled: cron_jobs.enabled,
             cron_jobs_failing_duration: cron_jobs.failing_duration,
             cron_jobs_min_failed_runs: cron_jobs.min_failed_runs,
+            cron_jobs_failure_rate_enabled: failure_rate.enabled,
+            cron_jobs_failure_rate_window_runs: failure_rate.window_runs,
+            cron_jobs_failure_rate_threshold: failure_rate.threshold,
             notifications_enabled: notifications.enabled,
             notifications_cluster_name: notifications.cluster_name,
             notifications_reasons: notifications.reasons,
@@ -309,5 +334,36 @@ mod tests {
         let parsed: Result<ReaperConfigSpec, _> =
             serde_json::from_value(serde_json::json!({ "mode": "off" }));
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn failure_rate_is_in_the_schema() {
+        let crd = serde_json::to_value(ReaperConfig::crd()).unwrap();
+        let fr = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["cronJobs"]["properties"]["failureRate"]["properties"];
+        assert_eq!(fr["enabled"]["type"], "boolean");
+        assert_eq!(fr["windowRuns"]["type"], "integer");
+        assert_eq!(fr["windowRuns"]["minimum"], 3.0);
+        assert_eq!(fr["windowRuns"]["maximum"], 100.0);
+        assert_eq!(fr["threshold"]["type"], "string");
+        assert_eq!(fr["threshold"]["pattern"], "^(5[1-9]|[6-9][0-9]|100)%?$");
+    }
+
+    #[test]
+    fn failure_rate_reaches_the_core() {
+        let spec: ReaperConfigSpec = serde_json::from_value(serde_json::json!({
+            "cronJobs": { "failureRate": { "enabled": false, "windowRuns": 5, "threshold": "90%" } }
+        }))
+        .unwrap();
+        let fr = spec.to_config().unwrap().cron_jobs.failure_rate;
+        assert!(!fr.enabled);
+        assert_eq!(fr.window_runs, 5);
+        assert_eq!(fr.threshold, 90);
+        let spec: ReaperConfigSpec =
+            serde_json::from_value(serde_json::json!({ "cronJobs": { "enabled": true } })).unwrap();
+        assert_eq!(
+            spec.to_config().unwrap().cron_jobs.failure_rate,
+            reaper_core::config::FailureRate::default()
+        );
     }
 }

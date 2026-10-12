@@ -442,6 +442,7 @@ fn decide_cron_job(
         failed_runs: streak.failed_runs,
         last_failed_job: streak.last_failed_job,
         last_failure_reason: streak.last_failure_reason,
+        rate: None,
     };
     decision(plan, Some(streak.since), Some(evidence))
 }
@@ -1775,6 +1776,7 @@ mod tests {
                 failed_runs: 3,
                 last_failed_job: "ingest-2".into(),
                 last_failure_reason: Some("BackoffLimitExceeded".into()),
+                rate: None,
             })
         );
     }

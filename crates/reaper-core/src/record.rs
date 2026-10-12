@@ -30,21 +30,28 @@ pub const SUSPENDED_BY_REAPER: &str = "reaper.boop.ninja/suspended-by-reaper";
 pub const FAILING_SINCE: &str = "reaper.boop.ninja/failing-since";
 pub const FAILED_RUNS: &str = "reaper.boop.ninja/failed-runs";
 pub const LAST_FAILED_JOB: &str = "reaper.boop.ninja/last-failed-job";
+pub const RUN_HISTORY: &str = "reaper.boop.ninja/run-history";
 
 // Person-set threshold overrides (FR-034). Never written or deleted by the reaper.
 pub const CRASHLOOP_DURATION: &str = "reaper.boop.ninja/crashloop-duration";
 pub const MIN_RESTARTS: &str = "reaper.boop.ninja/min-restarts";
 pub const FAILING_DURATION: &str = "reaper.boop.ninja/failing-duration";
 pub const MIN_FAILED_RUNS: &str = "reaper.boop.ninja/min-failed-runs";
+pub const FAILURE_WINDOW: &str = "reaper.boop.ninja/failure-window";
+pub const FAILURE_THRESHOLD: &str = "reaper.boop.ninja/failure-threshold";
+pub const FAILURE_RATE: &str = "reaper.boop.ninja/failure-rate";
 
 /// Keys under the prefix that belong to people (`restore` is person-set but
 /// the reaper removes it once handled, so it is not listed here).
-pub const PERSON_KEYS: [&str; 5] = [
+pub const PERSON_KEYS: [&str; 8] = [
     MODE_KEY,
     CRASHLOOP_DURATION,
     MIN_RESTARTS,
     FAILING_DURATION,
     MIN_FAILED_RUNS,
+    FAILURE_WINDOW,
+    FAILURE_THRESHOLD,
+    FAILURE_RATE,
 ];
 
 pub const FLUX_RECONCILE: &str = "kustomize.toolkit.fluxcd.io/reconcile";
@@ -160,6 +167,104 @@ pub struct DecodeError {
     pub value: String,
 }
 
+/// One finished Job of a CronJob, as recorded in `run-history`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedRun {
+    /// `None` only for a success inferred from `lastSuccessfulTime`.
+    pub job: Option<String>,
+    /// The Job's finish time.
+    pub at: Timestamp,
+    pub ok: bool,
+}
+
+impl RecordedRun {
+    /// True when a run at `(at, job)` sorts after this one. A `None` name
+    /// compares equal to any name at the same time (research R2, R4).
+    #[must_use]
+    pub fn is_before(&self, at: Timestamp, job: Option<&str>) -> bool {
+        match (self.at.cmp(&at), self.job.as_deref(), job) {
+            (std::cmp::Ordering::Equal, Some(mine), Some(theirs)) => mine < theirs,
+            (o, _, _) => o == std::cmp::Ordering::Less,
+        }
+    }
+}
+
+/// The CronJob's recent finished runs, oldest first (FR-001). Invariants:
+/// `runs` holds at least one failure and is strictly increasing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunHistory {
+    /// Finish time of the first recorded failure.
+    pub since: Timestamp,
+    pub runs: Vec<RecordedRun>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunHistoryWire {
+    since: String,
+    runs: Vec<RecordedRunWire>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedRunWire {
+    job: Option<String>,
+    at: String,
+    ok: bool,
+}
+
+impl RunHistory {
+    /// Failed runs in the window.
+    #[must_use]
+    pub fn failed(&self) -> u32 {
+        u32::try_from(self.runs.iter().filter(|r| !r.ok).count()).unwrap_or(u32::MAX)
+    }
+
+    /// Compact JSON for the `run-history` annotation.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        let wire = RunHistoryWire {
+            since: self.since.to_string(),
+            runs: self
+                .runs
+                .iter()
+                .map(|r| RecordedRunWire {
+                    job: r.job.clone(),
+                    at: r.at.to_string(),
+                    ok: r.ok,
+                })
+                .collect(),
+        };
+        serde_json::to_string(&wire).expect("plain data serialises")
+    }
+
+    /// `None` when the value is not valid JSON, has unknown fields, or breaks
+    /// an invariant.
+    #[must_use]
+    pub fn decode(s: &str) -> Option<Self> {
+        let wire: RunHistoryWire = serde_json::from_str(s).ok()?;
+        let runs = wire
+            .runs
+            .into_iter()
+            .map(|r| {
+                Some(RecordedRun {
+                    at: Timestamp::parse_rfc3339(&r.at).ok()?,
+                    job: r.job,
+                    ok: r.ok,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let increasing = runs
+            .windows(2)
+            .all(|w| w[0].is_before(w[1].at, w[1].job.as_deref()));
+        (increasing && runs.iter().any(|r| !r.ok)).then_some(())?;
+        Some(RunHistory {
+            since: Timestamp::parse_rfc3339(&wire.since).ok()?,
+            runs,
+        })
+    }
+}
+
 /// Everything the reaper records on a workload.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkloadRecord {
@@ -180,6 +285,8 @@ pub struct WorkloadRecord {
     pub failing_since: Option<Timestamp>,
     pub failed_runs: Option<u32>,
     pub last_failed_job: Option<String>,
+    /// CronJob only: recent runs for the failure-rate rule.
+    pub run_history: Option<RunHistory>,
 }
 
 impl WorkloadRecord {
@@ -211,6 +318,13 @@ impl WorkloadRecord {
             .and_then(|v| v.parse::<u32>().map_err(|_| bad(ORIGINAL_REPLICAS, v)).ok());
         let helm_release = get(HELMRELEASE)
             .and_then(|v| v.parse::<NsName>().map_err(|_| bad(HELMRELEASE, v)).ok());
+        let run_history = get(RUN_HISTORY).and_then(|v| {
+            let h = RunHistory::decode(v);
+            if h.is_none() {
+                bad(RUN_HISTORY, v);
+            }
+            h
+        });
         let record = WorkloadRecord {
             state,
             crashloop_since,
@@ -225,6 +339,7 @@ impl WorkloadRecord {
             failing_since,
             failed_runs,
             last_failed_job: get(LAST_FAILED_JOB).map(str::to_owned),
+            run_history,
         };
         (record, errors)
     }
@@ -267,6 +382,10 @@ impl WorkloadRecord {
         put(FAILING_SINCE, self.failing_since.map(|t| t.to_string()));
         put(FAILED_RUNS, self.failed_runs.map(|n| n.to_string()));
         put(LAST_FAILED_JOB, self.last_failed_job.clone());
+        put(
+            RUN_HISTORY,
+            self.run_history.as_ref().map(RunHistory::encode),
+        );
         (a, self.state.map(|s| s.as_str().to_owned()))
     }
 }
@@ -426,6 +545,29 @@ mod tests {
             failing_since: Some(Timestamp::parse_rfc3339("2026-10-10T02:00:00Z").unwrap()),
             failed_runs: Some(7),
             last_failed_job: Some("ingest-29340000".into()),
+            run_history: Some(history()),
+        }
+    }
+
+    fn ts(s: &str) -> Timestamp {
+        Timestamp::parse_rfc3339(s).unwrap()
+    }
+
+    fn run(job: Option<&str>, at: &str, ok: bool) -> RecordedRun {
+        RecordedRun {
+            job: job.map(str::to_owned),
+            at: ts(at),
+            ok,
+        }
+    }
+
+    fn history() -> RunHistory {
+        RunHistory {
+            since: ts("2026-10-12T02:00:53Z"),
+            runs: vec![
+                run(Some("backup-29340000"), "2026-10-12T02:00:53Z", false),
+                run(None, "2026-10-13T02:00:40Z", true),
+            ],
         }
     }
 
@@ -446,6 +588,7 @@ mod tests {
             FAILING_SINCE,
             FAILED_RUNS,
             LAST_FAILED_JOB,
+            RUN_HISTORY,
         ] {
             assert!(a.contains_key(key), "{key}");
         }
@@ -538,9 +681,13 @@ mod tests {
             MIN_RESTARTS,
             FAILING_DURATION,
             MIN_FAILED_RUNS,
+            FAILURE_WINDOW,
+            FAILURE_THRESHOLD,
+            FAILURE_RATE,
         ] {
             assert!(!is_owned_key(key), "{key}");
         }
+        assert!(is_owned_key(RUN_HISTORY));
         assert!(is_owned_key(RESTORE));
         assert!(is_owned_key(PLAN));
         assert!(!is_owned_key("example.com/other"));
@@ -567,5 +714,59 @@ mod tests {
         );
         assert!(p.only_reaper_keys());
         assert!(MetadataPatch::between(&desired, Some("x"), &desired, Some("x")).is_empty());
+    }
+
+    #[test]
+    fn run_history_encodes_compact_json() {
+        assert_eq!(
+            history().encode(),
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[{"job":"backup-29340000","at":"2026-10-12T02:00:53Z","ok":false},{"job":null,"at":"2026-10-13T02:00:40Z","ok":true}]}"#
+        );
+        assert_eq!(RunHistory::decode(&history().encode()), Some(history()));
+        assert_eq!(history().failed(), 1);
+    }
+
+    #[test]
+    fn run_history_absent_is_not_written() {
+        let r = WorkloadRecord {
+            run_history: None,
+            ..full_record()
+        };
+        assert!(!r.encode().0.contains_key(RUN_HISTORY));
+    }
+
+    #[test]
+    fn unreadable_run_history_is_reported_and_absent() {
+        for bad in [
+            "not json",
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[{"job":"a","at":"2026-10-12T02:00:53Z","ok":false}],"extra":1}"#,
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[{"job":"a","at":"2026-10-12T02:00:53Z","ok":false,"x":1}]}"#,
+            r#"{"since":"yesterday","runs":[{"job":"a","at":"2026-10-12T02:00:53Z","ok":false}]}"#,
+            // empty, or no failure in the window
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[]}"#,
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[{"job":"a","at":"2026-10-12T02:00:53Z","ok":true}]}"#,
+            // not strictly increasing by (at, job)
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[{"job":"b","at":"2026-10-12T02:00:53Z","ok":false},{"job":"a","at":"2026-10-12T02:00:53Z","ok":false}]}"#,
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[{"job":"a","at":"2026-10-12T03:00:00Z","ok":false},{"job":"b","at":"2026-10-12T02:00:53Z","ok":false}]}"#,
+            r#"{"since":"2026-10-12T02:00:53Z","runs":[{"job":"a","at":"2026-10-12T02:00:53Z","ok":false},{"job":null,"at":"2026-10-12T02:00:53Z","ok":true}]}"#,
+        ] {
+            let (r, errors) = WorkloadRecord::decode(&map(&[(RUN_HISTORY, bad)]), None);
+            assert_eq!(r.run_history, None, "{bad}");
+            assert_eq!(errors.len(), 1, "{bad}");
+            assert_eq!(errors[0].key, RUN_HISTORY);
+        }
+    }
+
+    #[test]
+    fn recorded_run_ordering_treats_null_job_as_equal() {
+        let r = run(Some("b"), "2026-10-12T02:00:00Z", false);
+        assert!(r.is_before(ts("2026-10-12T02:00:01Z"), Some("a")));
+        assert!(r.is_before(ts("2026-10-12T02:00:00Z"), Some("c")));
+        assert!(!r.is_before(ts("2026-10-12T02:00:00Z"), Some("b")));
+        assert!(!r.is_before(ts("2026-10-12T02:00:00Z"), Some("a")));
+        assert!(!r.is_before(ts("2026-10-12T02:00:00Z"), None));
+        let n = run(None, "2026-10-12T02:00:00Z", true);
+        assert!(!n.is_before(ts("2026-10-12T02:00:00Z"), Some("z")));
+        assert!(n.is_before(ts("2026-10-12T02:00:01Z"), None));
     }
 }

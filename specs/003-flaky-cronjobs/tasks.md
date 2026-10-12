@@ -27,13 +27,16 @@ Cluster work runs only with `KUBE_CONTEXT=kind-dev`, never `default`
 
 ## Phase 1: Setup
 
-- [ ] T201 Check the baseline:
+- [X] T201 Check the baseline:
   - `make test` is green on `fac73bf`;
   - `cargo bench -p reaper-core --bench decide` runs.
 
   Record the test count and the `decide` bench median here. Every later
   phase compares against them: SC-004, and the plan's limit of no more than
   10% regression on the bench.
+
+  **Recorded on `795f6d6`:** 297 passed, 9 ignored. `decide` bench (130
+  workloads, 22 decisions, 200 runs): median 208.6 µs, p99 339.3 µs.
 
 ## Phase 2: Foundational (blocks every story)
 
@@ -42,7 +45,7 @@ evidence and the CRD field. No behaviour changes yet.
 
 ### Tests first
 
-- [ ] T202 [P] Write unit tests in `crates/reaper-core/src/config.rs`.
+- [X] T202 [P] Write unit tests in `crates/reaper-core/src/config.rs`.
   - **Defaults.** `FailureRate::default()` is `{enabled: true, window_runs: 10, threshold: 80}`.
   - **Raw fields.** These parse:
     - `cron_jobs_failure_rate_enabled`;
@@ -52,7 +55,7 @@ evidence and the CRD field. No behaviour changes yet.
     - `window_runs` outside `3..=100` (test 2 and 101);
     - `threshold` outside `51..=100` (test 50, 101, `"abc"` and `"80.5%"`).
   - **Valid edges.** 3, 100, 51 and 100 are valid.
-- [ ] T203 [P] Write unit tests in `crates/reaper-core/src/record.rs`:
+- [X] T203 [P] Write unit tests in `crates/reaper-core/src/record.rs`:
   - **Round trip.** `RunHistory` survives `encode()` and `decode()` with the
     exact compact JSON from contracts/annotations.md, for example
     `{"since":"…","runs":[{"job":"backup-1","at":"…","ok":false},{"job":null,"at":"…","ok":true}]}`.
@@ -68,7 +71,7 @@ evidence and the CRD field. No behaviour changes yet.
     - an empty `runs`;
     - `runs` with no failure;
     - `runs` not strictly increasing by `(at, job)`.
-- [ ] T204 [P] Write a test in `crates/reaper-kube/src/crd.rs` that the
+- [X] T204 [P] Write a test in `crates/reaper-kube/src/crd.rs` that the
   generated CRD schema has `cronJobs.failureRate` with:
   - `enabled` (boolean);
   - `windowRuns` (integer, `minimum: 3`, `maximum: 100`);
@@ -78,14 +81,14 @@ evidence and the CRD field. No behaviour changes yet.
 
 ### Implementation
 
-- [ ] T205 Add `FailureRate { enabled: bool, window_runs: u32, threshold: u8 }`
+- [X] T205 Add `FailureRate { enabled: bool, window_runs: u32, threshold: u8 }`
   to `CronJobs` in `crates/reaper-core/src/config.rs`. It needs:
   - `WINDOW_RUNS_RANGE: (3, 100)` and `THRESHOLD_RANGE: (51, 100)`;
   - raw fields and validation in the existing `validate()` path.
 
   An out-of-range value makes the config invalid (FR-009). This makes T202
   pass.
-- [ ] T206 Make the following changes in `crates/reaper-core/src/record.rs`.
+- [X] T206 Make the following changes in `crates/reaper-core/src/record.rs`.
   This makes T203 pass.
   - **Keys.** Add the constants:
     - `RUN_HISTORY = "reaper.boop.ninja/run-history"`;
@@ -99,12 +102,12 @@ evidence and the CRD field. No behaviour changes yet.
     non-empty, at least one has `ok == false`, and they are strictly
     increasing by `(at, job)`.
   - **Encode.** `encode` writes the key only when it is `Some`.
-- [ ] T207 Add `RateEvidence { failed: u32, window: u32, met: bool }` in
+- [X] T207 Add `RateEvidence { failed: u32, window: u32, met: bool }` in
   `crates/reaper-core/src/plan.rs`. Extend
   `Evidence::JobFailures { …, rate: Option<RateEvidence> }`, and set
   `rate: None` at every existing construction site. Existing tests must
   still pass unchanged (SC-004).
-- [ ] T208 Add `FailureRateSpec { enabled: Option<bool>, window_runs:
+- [X] T208 Add `FailureRateSpec { enabled: Option<bool>, window_runs:
   Option<u32>, threshold: Option<String> }` and
   `CronJobsSpec.failure_rate: Option<FailureRateSpec>` in
   `crates/reaper-kube/src/crd.rs`. Use schemars attributes for the range

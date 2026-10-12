@@ -79,6 +79,27 @@ pub struct CronJobs {
     pub enabled: bool,
     pub failing_duration: Duration,
     pub min_failed_runs: u32,
+    pub failure_rate: FailureRate,
+}
+
+/// The failure-rate rule (spec 003): a CronJob whose recorded window of
+/// `window_runs` runs holds at least `threshold` percent failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailureRate {
+    pub enabled: bool,
+    pub window_runs: u32,
+    /// Percent, 51–100.
+    pub threshold: u8,
+}
+
+impl Default for FailureRate {
+    fn default() -> Self {
+        FailureRate {
+            enabled: true,
+            window_runs: 10,
+            threshold: 80,
+        }
+    }
 }
 
 /// Which transitions are sent to notification channels (US6). Channel URLs
@@ -141,6 +162,7 @@ impl Default for Config {
                 enabled: true,
                 failing_duration: Duration::from_hours(6),
                 min_failed_runs: 3,
+                failure_rate: FailureRate::default(),
             },
             notifications: Notifications::default(),
         }
@@ -160,6 +182,21 @@ pub const MIN_RESTARTS_RANGE: (u32, u32) = (1, 10_000);
 pub const FAILING_DURATION_RANGE: (u64, u64) = (10 * MINUTE, 7 * DAY);
 /// Valid range of `cronJobs.minFailedRuns` (and its override).
 pub const MIN_FAILED_RUNS_RANGE: (u32, u32) = (1, 1000);
+/// Valid range of `cronJobs.failureRate.windowRuns` (and its override).
+pub const WINDOW_RUNS_RANGE: (u32, u32) = (3, 100);
+/// Valid range, in percent, of `cronJobs.failureRate.threshold` (and its
+/// override).
+pub const THRESHOLD_RANGE: (u8, u8) = (51, 100);
+
+/// Parses a percentage written `85` or `85%`. Range checks are the caller's.
+#[must_use]
+pub fn parse_percent(value: &str) -> Option<u8> {
+    let digits = value.strip_suffix('%').unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
 
 /// Configuration as it arrives from outside (the CRD spec): every field
 /// optional, durations as strings. `Config::from_raw` fills defaults and
@@ -180,6 +217,9 @@ pub struct RawConfig {
     pub cron_jobs_enabled: Option<bool>,
     pub cron_jobs_failing_duration: Option<String>,
     pub cron_jobs_min_failed_runs: Option<i64>,
+    pub cron_jobs_failure_rate_enabled: Option<bool>,
+    pub cron_jobs_failure_rate_window_runs: Option<i64>,
+    pub cron_jobs_failure_rate_threshold: Option<String>,
     pub notifications_enabled: Option<bool>,
     pub notifications_cluster_name: Option<String>,
     pub notifications_reasons: Option<Vec<String>>,
@@ -290,7 +330,7 @@ impl Config {
             MIN_FAILED_RUNS_RANGE,
             &mut c.cron_jobs.min_failed_runs,
         );
-
+        failure_rate_fields(&mut errors, raw, &mut c.cron_jobs.failure_rate);
         notifications_fields(&mut errors, raw, &mut c.notifications);
         if errors.is_empty() {
             Ok(c)
@@ -317,6 +357,14 @@ impl Config {
             cron_jobs_enabled: Some(self.cron_jobs.enabled),
             cron_jobs_failing_duration: Some(format_duration(self.cron_jobs.failing_duration)),
             cron_jobs_min_failed_runs: Some(self.cron_jobs.min_failed_runs.into()),
+            cron_jobs_failure_rate_enabled: Some(self.cron_jobs.failure_rate.enabled),
+            cron_jobs_failure_rate_window_runs: Some(
+                self.cron_jobs.failure_rate.window_runs.into(),
+            ),
+            cron_jobs_failure_rate_threshold: Some(format!(
+                "{}%",
+                self.cron_jobs.failure_rate.threshold
+            )),
             notifications_enabled: Some(self.notifications.enabled),
             notifications_cluster_name: Some(self.notifications.cluster_name.clone()),
             notifications_reasons: Some(self.notifications.reasons.iter().cloned().collect()),
@@ -362,6 +410,29 @@ fn list_field(
 
 /// Longest `notifications.clusterName`; it is only a label in messages.
 const CLUSTER_NAME_MAX: usize = 63;
+
+fn failure_rate_fields(errors: &mut Vec<FieldError>, raw: &RawConfig, f: &mut FailureRate) {
+    if let Some(v) = raw.cron_jobs_failure_rate_enabled {
+        f.enabled = v;
+    }
+    int_field(
+        errors,
+        "spec.cronJobs.failureRate.windowRuns",
+        raw.cron_jobs_failure_rate_window_runs,
+        WINDOW_RUNS_RANGE,
+        &mut f.window_runs,
+    );
+    if let Some(v) = raw.cron_jobs_failure_rate_threshold.as_deref() {
+        let (min, max) = THRESHOLD_RANGE;
+        match parse_percent(v) {
+            Some(p) if (min..=max).contains(&p) => f.threshold = p,
+            _ => errors.push(FieldError {
+                field: "spec.cronJobs.failureRate.threshold",
+                message: format!("{v:?} is not a percentage in {min}%..{max}%"),
+            }),
+        }
+    }
+}
 
 fn notifications_fields(errors: &mut Vec<FieldError>, raw: &RawConfig, n: &mut Notifications) {
     if let Some(v) = raw.notifications_enabled {
@@ -670,6 +741,80 @@ mod tests {
                 "spec.cronJobs.minFailedRuns"
             ]
         );
+    }
+
+    #[test]
+    fn failure_rate_defaults_and_parse() {
+        assert_eq!(
+            Config::default().cron_jobs.failure_rate,
+            FailureRate {
+                enabled: true,
+                window_runs: 10,
+                threshold: 80,
+            }
+        );
+        for (threshold, want) in [("80%", 80), ("80", 80), ("51%", 51), ("100", 100)] {
+            let raw = RawConfig {
+                cron_jobs_failure_rate_enabled: Some(false),
+                cron_jobs_failure_rate_window_runs: Some(3),
+                cron_jobs_failure_rate_threshold: Some(threshold.into()),
+                ..RawConfig::default()
+            };
+            let c = Config::from_raw(&raw).unwrap();
+            assert_eq!(
+                c.cron_jobs.failure_rate,
+                FailureRate {
+                    enabled: false,
+                    window_runs: 3,
+                    threshold: want,
+                }
+            );
+            assert_eq!(Config::from_raw(&c.to_raw()).unwrap(), c);
+        }
+        let raw = RawConfig {
+            cron_jobs_failure_rate_window_runs: Some(100),
+            ..RawConfig::default()
+        };
+        assert_eq!(
+            Config::from_raw(&raw)
+                .unwrap()
+                .cron_jobs
+                .failure_rate
+                .window_runs,
+            100
+        );
+    }
+
+    #[test]
+    fn failure_rate_out_of_range_is_invalid() {
+        for window in [2, 101] {
+            let raw = RawConfig {
+                cron_jobs_failure_rate_window_runs: Some(window),
+                ..RawConfig::default()
+            };
+            let err = Config::from_raw(&raw).unwrap_err();
+            assert_eq!(err.errors[0].field, "spec.cronJobs.failureRate.windowRuns");
+        }
+        for threshold in ["50", "50%", "101%", "abc", "80.5%", "", "%"] {
+            let raw = RawConfig {
+                cron_jobs_failure_rate_threshold: Some(threshold.into()),
+                ..RawConfig::default()
+            };
+            let err = Config::from_raw(&raw).unwrap_err();
+            assert_eq!(
+                err.errors[0].field, "spec.cronJobs.failureRate.threshold",
+                "{threshold}"
+            );
+        }
+    }
+
+    #[test]
+    fn percent_parse() {
+        assert_eq!(parse_percent("85"), Some(85));
+        assert_eq!(parse_percent("85%"), Some(85));
+        assert_eq!(parse_percent("85%%"), None);
+        assert_eq!(parse_percent(" 85"), None);
+        assert_eq!(parse_percent("300"), None);
     }
 
     #[test]

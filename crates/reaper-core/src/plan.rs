@@ -256,7 +256,17 @@ pub enum Evidence {
         failed_runs: u32,
         last_failed_job: String,
         last_failure_reason: Option<String>,
+        /// The failure-rate window, while a run history exists (spec 003).
+        rate: Option<RateEvidence>,
     },
+}
+
+/// Failed runs out of the runs in the window, and whether the rate rule is met.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateEvidence {
+    pub failed: u32,
+    pub window: u32,
+    pub met: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
