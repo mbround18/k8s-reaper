@@ -425,7 +425,7 @@ quickstart §3.
 - [X] T260 [P] Apply the four deltas in `specs/003-flaky-cronjobs/contracts/`
   in place to `specs/001-crashloop-reaper/contracts/{annotations,config,events,metrics}.md`,
   so the drift test (T252) passes.
-- [ ] T261 [P] Update `docs/guides/cronjobs.md` with a new section, "The
+- [X] T261 [P] Update `docs/guides/cronjobs.md` with a new section, "The
   failure-rate rule". It covers:
   - how runs are recorded;
   - the four conditions;
@@ -438,12 +438,12 @@ quickstart §3.
     - `failedJobsHistoryLimit: 0` with a short TTL evades the rule.
 
   Also fix section 5's "one success ends it" text.
-- [ ] T262 [P] Update `docs/guides/configuration.md` with the
+- [X] T262 [P] Update `docs/guides/configuration.md` with the
   `cronJobs.failureRate` fields, defaults and ranges, and the upgrade note
   (run in report mode first).
-- [ ] T263 [P] Update `docs/guides/monitoring.md` with the two gauges and
+- [X] T263 [P] Update `docs/guides/monitoring.md` with the two gauges and
   the ratio PromQL from contracts/metrics.md.
-- [ ] T264 [P] Update `docs/guides/how-it-works.md` with one paragraph on
+- [X] T264 [P] Update `docs/guides/how-it-works.md` with one paragraph on
   the two CronJob rules.
 - [ ] T265 Regenerate the CRD with `cargo run -p k8s-reaper -- crd`. Check
   it in wherever the repo keeps the generated copy (if it keeps one), and

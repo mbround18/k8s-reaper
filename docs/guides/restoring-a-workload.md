@@ -250,11 +250,12 @@ The `recoveryWindow` (10 minutes by default) only affects a workload that is
 being watched but has not been reaped. Its crash loop is forgotten once it has
 stayed healthy for that long. A restored workload has nothing left to forget.
 
-For a CronJob, the failing streak starts again from zero. Jobs that failed
+For a CronJob, the failing streak and the run history start again from zero.
+Jobs that failed
 before the restore are not counted again: the reaper keeps
 `reaper.boop.ninja/last-failed-job` set to the newest of them, and counts only
 Jobs that fail after it. The CronJob is suspended again only once those new
-failures meet `cronJobs.failingDuration` and `cronJobs.minFailedRuns`. Fix the
+failures meet one of its rules again. Fix the
 cause before you restore it, or right after.
 
 After a restore, to stop the reaper acting on a workload while you work on it,
