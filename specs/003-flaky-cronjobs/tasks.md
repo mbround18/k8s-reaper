@@ -422,7 +422,7 @@ quickstart §3.
 
 ## Phase 8: Polish and cross-cutting
 
-- [ ] T260 [P] Apply the four deltas in `specs/003-flaky-cronjobs/contracts/`
+- [X] T260 [P] Apply the four deltas in `specs/003-flaky-cronjobs/contracts/`
   in place to `specs/001-crashloop-reaper/contracts/{annotations,config,events,metrics}.md`,
   so the drift test (T252) passes.
 - [ ] T261 [P] Update `docs/guides/cronjobs.md` with a new section, "The
