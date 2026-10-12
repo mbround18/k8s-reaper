@@ -17,7 +17,7 @@ use crate::ports::{
     ActionKind, ActionResult, ClusterWriter, EventRecord, EventSink, HelmReleasePatch, Telemetry,
     WorkloadRow, WriteError,
 };
-use crate::record::MetadataPatch;
+use crate::record::{MetadataPatch, RUN_HISTORY, RecordedRun, RunHistory};
 use crate::time::Timestamp;
 
 /// Drive a future that never actually waits (the fakes are all ready at
@@ -128,6 +128,52 @@ pub fn running_job(name: &str) -> JobView {
         name: name.into(),
         outcome: JobOutcome::Running,
     }
+}
+
+/// An observed CronJob `app/ingest` with a recorded run history (spec 003):
+/// runs one minute apart ending a minute ago, oldest first (`F` failed, `S`
+/// succeeded), the history begun seven hours ago. The newest two Jobs are
+/// still listed, and the last success is the CronJob's `lastSuccessfulTime`.
+///
+/// # Panics
+/// If `pattern` is absurdly long.
+#[must_use]
+pub fn flaky_cron(pattern: &str) -> WorkloadView {
+    let n = i64::try_from(pattern.len()).expect("a short pattern");
+    let runs: Vec<RecordedRun> = pattern
+        .chars()
+        .zip(0..)
+        .map(|(c, i)| RecordedRun {
+            job: Some(format!("ingest-{i}")),
+            at: mins_ago(n - i),
+            ok: c == 'S',
+        })
+        .collect();
+    let mut w = cron_job("app", "ingest");
+    let cron = cron_mut(&mut w);
+    cron.jobs = runs
+        .iter()
+        .rev()
+        .take(2)
+        .filter_map(|r| {
+            let name = r.job.as_deref()?;
+            let minutes = (NOW.0 - r.at.0) / 60;
+            Some(if r.ok {
+                succeeded_job(name, minutes)
+            } else {
+                failed_job(name, minutes)
+            })
+        })
+        .collect();
+    cron.last_successful_time = runs.iter().rev().find(|r| r.ok).map(|r| r.at);
+    let history = RunHistory {
+        since: mins_ago(7 * 60),
+        runs,
+    };
+    w.reaper_annotations
+        .insert(RUN_HISTORY.into(), history.encode());
+    w.state_label = Some("observed".into());
+    w
 }
 
 /// The CronJob part of a fixture workload.

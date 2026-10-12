@@ -12,17 +12,21 @@ use crate::config::{
     CRASH_LOOP_DURATION_RANGE, Config, FAILING_DURATION_RANGE, MIN_FAILED_RUNS_RANGE,
     MIN_RESTARTS_RANGE, Mode, parse_mode_override,
 };
-use crate::detect::{JobStreak, WorkloadPods, group_pods, job_streak};
+use crate::detect::{
+    JobStreak, Streak, WorkloadPods, group_pods, job_streak, rate_met, update_history,
+};
 use crate::glob::any_matches;
 use crate::model::{
-    CronJobView, NsName, ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadRef, WorkloadView,
+    CronJobView, JobOutcome, NsName, ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadRef,
+    WorkloadView,
 };
 use crate::plan::{
-    Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, RestoreKind, SkipReason, StaleHold,
+    Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, RateEvidence, RestoreKind,
+    SkipReason, StaleHold,
 };
 use crate::record::{
     CRASHLOOP_DURATION, FAILING_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold,
-    MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE, State, WorkloadRecord,
+    MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE, RunHistory, State, WorkloadRecord,
 };
 use crate::time::parse_duration;
 
@@ -187,6 +191,7 @@ fn out_of_scope(snap: &Snapshot, w: &WorkloadView) -> Option<Decision> {
         since: record.crashloop_since.or(record.failing_since),
         healthy_since: None,
         evidence: None,
+        run_history: record.run_history,
     })
 }
 
@@ -236,6 +241,9 @@ struct Thresholds {
     min_restarts: u32,
     failing_duration: Duration,
     min_failed_runs: u32,
+    failure_rate_enabled: bool,
+    window_runs: u32,
+    threshold: u8,
 }
 
 impl Thresholds {
@@ -295,6 +303,9 @@ impl Thresholds {
                 MIN_FAILED_RUNS_RANGE,
                 config.cron_jobs.min_failed_runs,
             ),
+            failure_rate_enabled: config.cron_jobs.failure_rate.enabled,
+            window_runs: config.cron_jobs.failure_rate.window_runs,
+            threshold: config.cron_jobs.failure_rate.threshold,
         }
     }
 }
@@ -314,6 +325,7 @@ fn decide_workload(
         since,
         healthy_since,
         evidence,
+        run_history: None,
     };
     let has_state = record.state.is_some() || record.crashloop_since.is_some();
 
@@ -376,8 +388,10 @@ fn decide_workload(
 }
 
 /// A CronJob, decided from its Jobs (FR-028 to FR-033). Like any workload
-/// once held; otherwise failing runs take the place of a crash loop, and a
-/// success clears state at once, with no recovery window.
+/// once held; otherwise failing runs take the place of a crash loop. Two
+/// rules make a candidate: the failing streak, and the failure rate over the
+/// recorded run history (spec 003). State clears once the streak passes and
+/// the window holds no failure, with no recovery window.
 fn decide_cron_job(
     snap: &Snapshot,
     config: &Config,
@@ -387,23 +401,26 @@ fn decide_cron_job(
     thresholds: &Thresholds,
 ) -> Decision {
     let (record, _) = WorkloadRecord::decode(&w.reaper_annotations, w.state_label.as_deref());
-    let decision = |plan, since, evidence| Decision {
+    let decision = |plan, since, evidence, run_history| Decision {
         workload: w.workload.clone(),
         plan,
         since,
         healthy_since: None,
         evidence,
+        run_history,
     };
-    let has_state = record.state.is_some() || record.failing_since.is_some();
+    let has_state =
+        record.state.is_some() || record.failing_since.is_some() || record.run_history.is_some();
 
     match record.state {
         // Restore keeps working with `cronJobs.enabled: false` (FR-033).
+        // The history is kept to explain the reap.
         Some(State::Reaped | State::Reaping) => {
             let plan = held_plan(snap, w, &record, mode);
-            return decision(plan, record.failing_since, None);
+            return decision(plan, record.failing_since, None, record.run_history);
         }
         _ if record.restore && mode != Mode::Off => {
-            return decision(Plan::RestoreIgnored, None, None);
+            return decision(Plan::RestoreIgnored, None, None, None);
         }
         _ => {}
     }
@@ -414,37 +431,108 @@ fn decide_cron_job(
         } else {
             Plan::Nothing
         };
-        return decision(plan, None, None);
+        return decision(plan, None, None, None);
     }
 
-    let streak = match job_streak(cron, &record) {
-        JobStreak::Unknown => return decision(Plan::Nothing, None, None),
-        JobStreak::Passing => {
-            let plan = if has_state {
-                Plan::Recover
-            } else {
-                Plan::Nothing
-            };
-            return decision(plan, None, None);
-        }
-        JobStreak::Failing(streak) => streak,
+    let streak = job_streak(cron, &record);
+    if streak == JobStreak::Unknown {
+        return decision(Plan::Nothing, None, None, None);
+    }
+    let history = if thresholds.failure_rate_enabled {
+        update_history(
+            record.run_history.clone(),
+            cron,
+            &streak,
+            thresholds.window_runs,
+        )
+    } else {
+        None
     };
-    let is_candidate = snap
-        .now
-        .elapsed_at_least(streak.since, thresholds.failing_duration)
-        && streak.failed_runs >= thresholds.min_failed_runs;
-    let plan = if is_candidate {
+    let failing = if let JobStreak::Failing(s) = streak {
+        Some(s)
+    } else {
+        None
+    };
+    if failing.is_none() && history.is_none() {
+        let plan = if has_state {
+            Plan::Recover
+        } else {
+            Plan::Nothing
+        };
+        return decision(plan, None, None, None);
+    }
+
+    let streak_met = failing.as_ref().is_some_and(|s| {
+        snap.now
+            .elapsed_at_least(s.since, thresholds.failing_duration)
+            && s.failed_runs >= thresholds.min_failed_runs
+    });
+    let rate = history.as_ref().map(|h| {
+        rate_met(
+            h,
+            thresholds.failure_rate_enabled,
+            thresholds.window_runs,
+            thresholds.threshold,
+            thresholds.failing_duration,
+            snap.now,
+        )
+    });
+    let plan = if streak_met || rate.is_some_and(|r| r.met) {
         candidate_plan(snap, config, w, mode)
     } else {
         Plan::Observe
     };
-    let evidence = Evidence::JobFailures {
-        failed_runs: streak.failed_runs,
-        last_failed_job: streak.last_failed_job,
-        last_failure_reason: streak.last_failure_reason,
-        rate: None,
-    };
-    decision(plan, Some(streak.since), Some(evidence))
+    // FR-007: ordered by the earliest start among the rules.
+    let since = [
+        failing.as_ref().map(|s| s.since),
+        history.as_ref().map(|h| h.since),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    let evidence = job_failures(failing, streak_met, rate, history.as_ref(), cron);
+    decision(plan, since, Some(evidence), history)
+}
+
+/// The evidence for a CronJob: its failing streak, or when the streak is not
+/// failing, the window's newest failure, which is never an inferred run.
+fn job_failures(
+    failing: Option<Streak>,
+    streak_met: bool,
+    rate: Option<RateEvidence>,
+    history: Option<&RunHistory>,
+    cron: &CronJobView,
+) -> Evidence {
+    if let Some(s) = failing {
+        return Evidence::JobFailures {
+            failed_runs: s.failed_runs,
+            last_failed_job: s.last_failed_job,
+            last_failure_reason: s.last_failure_reason,
+            streak_since: Some(s.since),
+            streak_met,
+            rate,
+        };
+    }
+    let job = history
+        .and_then(|h| h.runs.iter().rev().find(|r| !r.ok))
+        .and_then(|r| r.job.clone())
+        .unwrap_or_default();
+    let reason = cron
+        .jobs
+        .iter()
+        .find(|j| j.name == job)
+        .and_then(|j| match &j.outcome {
+            JobOutcome::Failed { reason, .. } => reason.clone(),
+            _ => None,
+        });
+    Evidence::JobFailures {
+        failed_runs: 0,
+        last_failed_job: job,
+        last_failure_reason: reason,
+        streak_since: None,
+        streak_met: false,
+        rate,
+    }
 }
 
 fn candidate_plan(snap: &Snapshot, config: &Config, w: &WorkloadView, mode: Mode) -> Plan {
@@ -682,11 +770,12 @@ mod tests {
     use crate::model::{NsName, WorkloadRef};
     use crate::record::{
         CRASHLOOP_SINCE, FAILING_SINCE, HEALTHY_SINCE, HELMRELEASE, ORIGINAL_REPLICAS,
-        PREVIOUS_RECONCILE, PreviousReconcile,
+        PREVIOUS_RECONCILE, PreviousReconcile, RUN_HISTORY,
     };
     use crate::testing::{
         NOW, add_namespace, add_pod, crashlooping_container, cron_job, cron_mut, deployment,
-        failed_job, healthy_container, helm_release, mins_ago, snapshot, succeeded_job, workload,
+        failed_job, flaky_cron, healthy_container, helm_release, mins_ago, snapshot, succeeded_job,
+        workload,
     };
 
     /// A Deployment whose pod crash-loops with `restarts`, first observed
@@ -1776,7 +1865,14 @@ mod tests {
                 failed_runs: 3,
                 last_failed_job: "ingest-2".into(),
                 last_failure_reason: Some("BackoffLimitExceeded".into()),
-                rate: None,
+                streak_since: Some(mins_ago(360)),
+                streak_met: true,
+                // Spec 003: three runs do not fill the window.
+                rate: Some(RateEvidence {
+                    failed: 3,
+                    window: 3,
+                    met: false,
+                }),
             })
         );
     }
@@ -1981,5 +2077,124 @@ mod tests {
         snap.workloads = vec![c];
         let p = decide(&snap, &config);
         assert_eq!(restore_of(&p, "ingest").0, RestoreKind::Requested);
+    }
+
+    // Spec 003, US1: the failure-rate rule (T221)
+
+    fn history_of(d: &Decision) -> String {
+        d.run_history
+            .as_ref()
+            .map(RunHistory::encode)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn rate_only_candidate_below_the_streak_thresholds() {
+        // The streak since the last success is 2 runs, 2 minutes old.
+        let p = run(snapshot(), vec![flaky_cron("FFSFFFFSFF")]);
+        let d = only(&p);
+        assert_eq!(
+            d.plan,
+            Plan::Reap {
+                actions: cron_reap()
+            }
+        );
+        assert_eq!(d.since, Some(mins_ago(7 * 60)));
+        assert_eq!(
+            d.evidence,
+            Some(Evidence::JobFailures {
+                failed_runs: 2,
+                last_failed_job: "ingest-9".into(),
+                last_failure_reason: Some("BackoffLimitExceeded".into()),
+                streak_since: Some(mins_ago(2)),
+                streak_met: false,
+                rate: Some(RateEvidence {
+                    failed: 8,
+                    window: 10,
+                    met: true,
+                }),
+            })
+        );
+        // Nothing new was recorded.
+        let c = flaky_cron("FFSFFFFSFF");
+        assert_eq!(&history_of(d), &c.reaper_annotations[RUN_HISTORY]);
+    }
+
+    #[test]
+    fn rate_candidate_is_held_by_flux_as_for_the_streak() {
+        let mut snap = snapshot();
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.flux.kustomization = Some(NsName::new("flux-system", "apps"));
+        snap.workloads = vec![c];
+        let p = decide(&snap, &Config::default());
+        let Plan::Reap { actions } = reap_of(&p, "ingest") else {
+            panic!("not a reap");
+        };
+        assert!(actions.contains(&Action::SuspendCronJob));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::DisableKustomizeReconcile(_)))
+        );
+    }
+
+    #[test]
+    fn rate_rule_disabled_leaves_the_streak_alone() {
+        let mut config = Config::default();
+        config.cron_jobs.failure_rate.enabled = false;
+        let mut snap = snapshot();
+        snap.workloads = vec![flaky_cron("FFSFFFFSFF")];
+        let p = decide(&snap, &config);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        assert_eq!(d.since, Some(mins_ago(2)));
+        assert_eq!(d.run_history, None);
+    }
+
+    #[test]
+    fn newest_run_succeeded_while_the_window_holds_failures_is_observed() {
+        let p = run(snapshot(), vec![flaky_cron("FFFFFFFFFS")]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        assert_eq!(d.since, Some(mins_ago(7 * 60)));
+        assert_eq!(
+            d.evidence,
+            Some(Evidence::JobFailures {
+                failed_runs: 0,
+                last_failed_job: "ingest-8".into(),
+                last_failure_reason: Some("BackoffLimitExceeded".into()),
+                streak_since: None,
+                streak_met: false,
+                rate: Some(RateEvidence {
+                    failed: 9,
+                    window: 10,
+                    met: false,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn window_cleared_with_a_passing_streak_recovers() {
+        let mut config = Config::default();
+        config.cron_jobs.failure_rate.window_runs = 3;
+        let mut c = flaky_cron("FSS");
+        cron_mut(&mut c).jobs.push(succeeded_job("ingest-3", 0));
+        cron_mut(&mut c).last_successful_time = Some(NOW);
+        let mut snap = snapshot();
+        snap.workloads = vec![c];
+        let p = decide(&snap, &config);
+        assert_eq!(only(&p).plan, Plan::Recover);
+    }
+
+    #[test]
+    fn rate_candidates_are_ordered_by_history_start() {
+        let mut snap = snapshot();
+        let web = add_looping(&mut snap, "web", 60);
+        snap.workloads = vec![web, flaky_cron("FFSFFFFSFF")];
+        let p = decide(&snap, &Config::default());
+        // The history began seven hours ago, before the crash loop.
+        assert!(matches!(reap_of(&p, "ingest"), Plan::Reap { .. }));
+        assert_eq!(skip_of(&reap_of(&p, "web")), Some(SkipReason::RateLimited));
     }
 }

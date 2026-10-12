@@ -2,12 +2,13 @@
 //! resolution (FR-002), and CronJob failing streaks (FR-028 to FR-030).
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use crate::model::{
     ContainerView, CronJobView, JobOutcome, JobView, NsName, OwnerRef, PodView, Snapshot,
     WorkloadKind, WorkloadRef,
 };
-use crate::plan::UnsupportedPod;
+use crate::plan::{RateEvidence, UnsupportedPod};
 use crate::record::{RecordedRun, RunHistory, WorkloadRecord};
 use crate::time::Timestamp;
 
@@ -237,6 +238,8 @@ pub fn update_history(
         (None, JobStreak::Failing(s)) => (None, Vec::new(), Some(s.since)),
         (None, _) => return None,
     };
+    // A seeded history has no watermark, and every success is before it.
+    let watermark = runs.last().cloned();
     for (at, job) in finished_jobs(cron) {
         let new = runs.last().is_none_or(|l| l.is_before(at, Some(&job.name)));
         if new && from.is_none_or(|f| at >= f) {
@@ -248,14 +251,20 @@ pub fn update_history(
         }
     }
     let since = since.or_else(|| runs.first().map(|r| r.at))?;
+    // The deleted success may come before a failure still listed, so it
+    // is placed by time, not appended.
     if let Some(lst) = cron.last_successful_time {
-        let seen = runs.iter().any(|r| r.ok && r.at == lst);
-        if !seen && runs.last().is_some_and(|l| l.is_before(lst, None)) {
-            runs.push(RecordedRun {
-                job: None,
-                at: lst,
-                ok: true,
-            });
+        let seen = runs.iter().any(|r| r.at == lst);
+        if !seen && watermark.is_some_and(|w| w.is_before(lst, None)) {
+            let i = runs.partition_point(|r| r.at < lst);
+            runs.insert(
+                i,
+                RecordedRun {
+                    job: None,
+                    at: lst,
+                    ok: true,
+                },
+            );
         }
     }
     let keep = usize::try_from(window_runs).unwrap_or(usize::MAX);
@@ -265,12 +274,38 @@ pub fn update_history(
         .then_some(RunHistory { since, runs })
 }
 
+/// The failure-rate rule (FR-005): the window is full, at least
+/// `threshold` percent of it failed, the newest run failed, and the history
+/// began at least `failing_duration` ago. Integer arithmetic only.
+#[must_use]
+pub fn rate_met(
+    h: &RunHistory,
+    enabled: bool,
+    window_runs: u32,
+    threshold: u8,
+    failing_duration: Duration,
+    now: Timestamp,
+) -> RateEvidence {
+    let failed = h.failed();
+    let window = u32::try_from(h.runs.len()).unwrap_or(u32::MAX);
+    let met = enabled
+        && window == window_runs
+        && u64::from(failed) * 100 >= u64::from(threshold) * u64::from(window)
+        && h.runs.last().is_some_and(|r| !r.ok)
+        && now.elapsed_at_least(h.since, failing_duration);
+    RateEvidence {
+        failed,
+        window,
+        met,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Termination;
     use crate::testing::{
-        add_pod, crashlooping_container, deployment, failed_job, healthy_container, mins_ago,
+        NOW, add_pod, crashlooping_container, deployment, failed_job, healthy_container, mins_ago,
         running_job, snapshot, succeeded_job, workload,
     };
 
@@ -707,6 +742,21 @@ mod tests {
     }
 
     #[test]
+    fn history_infers_a_deleted_success_before_a_listed_failure() {
+        // j-2 succeeded at 20 and was deleted; j-3 failed after it.
+        let mut c = cron(vec![failed_job("j-1", 30), failed_job("j-3", 10)]);
+        c.last_successful_time = Some(mins_ago(20));
+        assert_eq!(
+            step(Some(one_failure()), &c, 10).unwrap().runs,
+            [
+                rec(Some("j-1"), 30, false),
+                rec(None, 20, true),
+                rec(Some("j-3"), 10, false),
+            ]
+        );
+    }
+
+    #[test]
     fn history_does_not_infer_a_listed_success() {
         let mut c = cron(vec![failed_job("j-1", 30), succeeded_job("j-2", 20)]);
         c.last_successful_time = Some(mins_ago(20));
@@ -906,5 +956,83 @@ mod tests {
         }
         // The table must keep exercising histories, inference and trimming.
         assert!(checked > 1000 && inferred > 100 && trimmed > 1000);
+    }
+
+    // Spec 003, US1: the failure-rate rule (T220)
+
+    /// Runs one minute apart ending a minute ago, oldest first: `F` failed,
+    /// `S` succeeded. The history began `since` minutes ago.
+    fn window(pattern: &str, since: i64) -> RunHistory {
+        let n = i64::try_from(pattern.len()).unwrap();
+        let runs = pattern
+            .chars()
+            .zip(0..)
+            .map(|(c, i)| rec(Some(&format!("j-{i}")), n - i, c == 'S'))
+            .collect();
+        hist(since, runs)
+    }
+
+    fn rate(h: &RunHistory, threshold: u8) -> RateEvidence {
+        rate_met(h, true, 10, threshold, Duration::from_hours(6), NOW)
+    }
+
+    fn evidence(failed: u32, window: u32, met: bool) -> RateEvidence {
+        RateEvidence {
+            failed,
+            window,
+            met,
+        }
+    }
+
+    #[test]
+    fn rate_met_with_a_full_window_over_the_threshold() {
+        let h = window("FFSFFFFSFF", 7 * 60);
+        assert_eq!(rate(&h, 80), evidence(8, 10, true));
+        assert_eq!(
+            rate_met(&h, false, 10, 80, Duration::from_hours(6), NOW),
+            evidence(8, 10, false)
+        );
+    }
+
+    #[test]
+    fn rate_not_met_on_a_window_not_yet_full() {
+        assert_eq!(rate(&window("FFFFFF", 7 * 60), 80), evidence(6, 6, false));
+    }
+
+    #[test]
+    fn rate_not_met_when_the_newest_run_succeeded() {
+        assert_eq!(
+            rate(&window("FFFFFFFFFS", 7 * 60), 80),
+            evidence(9, 10, false)
+        );
+    }
+
+    #[test]
+    fn rate_not_met_below_the_threshold() {
+        assert_eq!(
+            rate(&window("FFSFSFFSFF", 7 * 60), 80),
+            evidence(7, 10, false)
+        );
+    }
+
+    #[test]
+    fn rate_not_met_before_the_failing_duration() {
+        let h = window("FFSFFFFSFF", 5 * 60);
+        assert_eq!(rate(&h, 80), evidence(8, 10, false));
+        // Exactly the duration is enough.
+        let h = window("FFSFFFFSFF", 6 * 60);
+        assert_eq!(rate(&h, 80), evidence(8, 10, true));
+    }
+
+    #[test]
+    fn rate_at_a_threshold_of_100_needs_every_run_failed() {
+        assert_eq!(
+            rate(&window("FFFFFFFFFF", 7 * 60), 100),
+            evidence(10, 10, true)
+        );
+        assert_eq!(
+            rate(&window("SFFFFFFFFF", 7 * 60), 100),
+            evidence(9, 10, false)
+        );
     }
 }

@@ -192,7 +192,7 @@ with the reason `<failed> of last <window> runs failed, …`.
 
 ### Tests first
 
-- [ ] T220 [P] [US1] Write unit tests for `rate_met` in
+- [X] T220 [P] [US1] Write unit tests for `rate_met` in
   `crates/reaper-core/src/detect.rs`. With window 10, threshold 80 and
   `failing_duration` 6h:
   - 8 of 10 failed, newest failed, `since` 7h ago → `met` (US1-1);
@@ -202,7 +202,7 @@ with the reason `<failed> of last <window> runs failed, …`.
   - `since` 5h ago → not met;
   - a threshold of 100 with 10 of 10 failed → met;
   - integer arithmetic only, where `failed*100 >= threshold*window`.
-- [ ] T221 [P] [US1] Write unit tests for `decide_cron_job` in
+- [X] T221 [P] [US1] Write unit tests for `decide_cron_job` in
   `crates/reaper-core/src/decide.rs`:
   1. **Rate only.** A CronJob whose history meets the rate rule while its
      streak does not: one failure since the last success, below
@@ -220,7 +220,7 @@ with the reason `<failed> of last <window> runs failed, …`.
      `apply_limits` holds the later one (FR-007).
   7. **Candidate recovers.** A candidate whose newest run then succeeds goes
      back to `Observe` (Edge Cases).
-- [ ] T222 [P] [US1] Write unit tests for `reason()` in
+- [X] T222 [P] [US1] Write unit tests for `reason()` in
   `crates/reaper-core/src/executor.rs`:
   - **Rate only.** `8 of last 10 runs failed, last job "ingest-1" failed
     (BackoffLimitExceeded)`.
@@ -232,11 +232,11 @@ with the reason `<failed> of last <window> runs failed, …`.
 
 ### Implementation
 
-- [ ] T223 [US1] Implement `pub fn rate_met(h: &RunHistory, enabled: bool,
+- [X] T223 [US1] Implement `pub fn rate_met(h: &RunHistory, enabled: bool,
   window_runs: u32, threshold: u8, failing_duration: Duration, now:
   Timestamp) -> RateEvidence` in `crates/reaper-core/src/detect.rs`, per
   data-model.md "Rate evaluation". This makes T220 pass.
-- [ ] T224 [US1] Make the following changes in
+- [X] T224 [US1] Make the following changes in
   `crates/reaper-core/src/decide.rs`. This makes T221 pass.
   - **Thresholds.** Extend `Thresholds` with
     `failure_rate_enabled: bool`, `window_runs: u32` and `threshold: u8`,
@@ -253,7 +253,7 @@ with the reason `<failed> of last <window> runs failed, …`.
     exists.
   - **Record.** Pass the new history to the decision so the executor can
     write it.
-- [ ] T225 [US1] Make the following changes in
+- [X] T225 [US1] Make the following changes in
   `crates/reaper-core/src/executor.rs`. This makes T222 pass.
   - **`reason()`.** Builds the three forms in contracts/annotations.md.
   - **`note()`.** For `JobFailuresObserved`, appends
