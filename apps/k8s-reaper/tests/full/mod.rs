@@ -1,4 +1,4 @@
-//! Shared by the full-mode dev-cluster stories (US2, US3, US5): switching the
+//! Shared by the full-mode dev-cluster stories (US2, US3, US5, US9): switching the
 //! dev ReaperConfig to full mode and back, and waiting on the fixtures.
 
 // Each story compiles this module on its own and uses only part of it.
@@ -187,6 +187,12 @@ impl FullMode {
 
     /// Full mode with `spec` merged over the saved spec.
     pub async fn enter_with(client: &Client, spec: &Value) -> Self {
+        Self::enter_in(client, "full", spec).await
+    }
+
+    /// `mode` with `spec` merged over the saved spec, for a story that
+    /// starts in report mode and switches to full with [`set_mode`].
+    pub async fn enter_in(client: &Client, mode: &str, spec: &Value) -> Self {
         let config = reaper_configs(client).get("default").await.unwrap();
         let saved = config.data["spec"].clone();
         assert_eq!(
@@ -194,10 +200,14 @@ impl FullMode {
             "the dev ReaperConfig should be in report mode before a story"
         );
         let mut spec = spec.clone();
-        spec["mode"] = json!("full");
+        spec["mode"] = json!(mode);
         patch_config(client, &spec).await;
         Self { saved }
     }
+}
+
+pub async fn set_mode(client: &Client, mode: &str) {
+    patch_config(client, &json!({ "mode": mode })).await;
 }
 
 impl Drop for FullMode {

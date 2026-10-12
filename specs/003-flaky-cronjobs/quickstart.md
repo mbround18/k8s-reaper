@@ -42,25 +42,31 @@ The story does the following:
    - `mode: report`;
    - `cronJobs.failingDuration: 10m`;
    - `cronJobs.failureRate: {windowRuns: 5, threshold: "80%"}`.
-2. **Creates the CronJob.** It creates `flaky` in namespace `cron` (the dev CronJob namespace):
+2. **Creates the CronJob.** It creates `mostly-failing` in its own
+   namespace, `cron-rate`, and scopes the ReaperConfig to it. The `cron`
+   fixtures stay out of scope: in full mode the story would otherwise
+   suspend `cron/failing` too, and US5 expects `cron/flaky` never to be.
    - schedule `* * * * *`;
    - `failedJobsHistoryLimit: 1`, `successfulJobsHistoryLimit: 1`;
    - `ttlSecondsAfterFinished: 30`.
 
    The Job fails unless the scheduled minute is divisible by 5. That is a
    fixed pattern of 4 failures in 5 runs, with no randomness.
-3. **Checks recording.** After the first failure, `flaky` is `observed` and
+3. **Checks recording.** After the first failure, `mostly-failing` is `observed` and
    `run-history` holds one run. After each later minute it holds one more
    run, never a duplicate. Successes deleted by the TTL show as `job: null`.
 4. **Checks the rate in report mode.** At least 10 minutes after the
    history began, the window holds 5 runs, 4 of them failed, and the newest
    one failed. Then:
-   - `flaky` is `candidate`;
-   - `reason` reads `4 of last 5 runs failed, last job "flaky-…" failed (BackoffLimitExceeded)`;
-   - a `ReapPlanned` Event carries that reason;
-   - `reaper_cronjob_rule{name="flaky",rule="failure_rate"} 1` is set;
+   - `mostly-failing` is `candidate`;
+   - the `ReapPlanned` Event note reads `4 of last 5 runs failed, last job
+     "mostly-failing-…" failed (BackoffLimitExceeded)`. The `reason`
+     annotation is written only when a reap starts, so report mode does not
+     carry it;
+   - `reaper_cronjob_rule{name="mostly-failing",rule="failure_rate"} 1` is
+     set;
    - `spec.suspend` is still `false`.
-5. **Checks full mode.** It switches to `mode: full`. `flaky` is suspended
+5. **Checks full mode.** It switches to `mode: full`. `mostly-failing` is suspended
    and the `Reaped` Event note names `4 of last 5 runs failed` (SC-006).
 6. **Checks the restore** (US4). It annotates `reaper.boop.ninja/restore=1`.
    - The CronJob resumes, and `run-history`, `failing-since` and
@@ -70,17 +76,17 @@ The story does the following:
 
 ## 3. A healthy CronJob carries nothing (SC-005)
 
-In the same story, `flaky` is patched so that every run succeeds. Within
+In the same story, `mostly-failing` is patched so that every run succeeds. Within
 `windowRuns` runs:
 
 - the history holds no failures;
 - `run-history` and the `state` label are removed;
 - `JobFailuresRecovered` is emitted once;
-- the `reaper_cronjob_window_runs` series for `flaky` are gone.
+- the `reaper_cronjob_window_runs` series for `mostly-failing` are gone.
 
 ## 4. Per-CronJob overrides (US3)
 
-| Annotation on `flaky`                 | Expected                                                                 |
+| Annotation on `mostly-failing`        | Expected                                                                 |
 | ------------------------------------- | ------------------------------------------------------------------------ |
 | `reaper.boop.ninja/failure-window=8`  | Not a candidate until 8 runs are recorded                                |
 | `reaper.boop.ninja/failure-window=3`  | No effect: the window stays 5 (the cluster value)                        |
@@ -90,7 +96,8 @@ In the same story, `flaky` is patched so that every run succeeds. Within
 ## 5. Clean up
 
 ```sh
-kubectl --context $KUBE_CONTEXT -n cron delete cronjob flaky
+kubectl --context $KUBE_CONTEXT -n cron-rate delete cronjob mostly-failing
 ```
 
-The story removes its ReaperConfig changes itself.
+The story deletes the CronJob and puts the ReaperConfig back itself. It
+keeps the `cron-rate` namespace for the next run.

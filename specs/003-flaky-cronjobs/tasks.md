@@ -265,7 +265,7 @@ with the reason `<failed> of last <window> runs failed, …`.
       `last-failed-job`) only while the streak is failing.
     - It keeps `run_history` unchanged on `held_plan`
       (`reaping`/`reaped`), per research R8.
-- [ ] T226 [US1] Write the opt-in kind story
+- [X] T226 [US1] Write the opt-in kind story
   `apps/k8s-reaper/tests/us9_flaky_cronjob.rs`, covering quickstart §2
   steps 1–5:
   - a minutely CronJob `flaky` in namespace `cron`, failing unless the
