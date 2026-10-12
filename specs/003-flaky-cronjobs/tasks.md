@@ -334,7 +334,7 @@ rule off. The cluster-wide `enabled: false` turns the rule off everywhere.
   - fall back to streak-only behaviour.
 
   This makes T231 pass.
-- [ ] T234 [US3] Extend `apps/k8s-reaper/tests/us9_flaky_cronjob.rs` with the
+- [X] T234 [US3] Extend `apps/k8s-reaper/tests/us9_flaky_cronjob.rs` with the
   four annotation rows of quickstart §4.
 
 ## Phase 6: User Story 4 — resuming starts a clean slate (P2)
@@ -367,7 +367,7 @@ are never recorded afterwards.
   `run_history`. Make sure the `Forget` and `Recover` paths write
   `WorkloadRecord::default()` with no history. Fix whatever T240 and T241
   expose.
-- [ ] T243 [US4] Add quickstart §2 step 6 (restore, then one failure gives a
+- [X] T243 [US4] Add quickstart §2 step 6 (restore, then one failure gives a
   one-run history and no candidate) to
   `apps/k8s-reaper/tests/us9_flaky_cronjob.rs`.
 
@@ -416,7 +416,7 @@ quickstart §3.
 - [X] T254 [US5] In `decide()` in `crates/reaper-core/src/decide.rs`, map
   `DecodeError`s for `run-history` to `InvalidSetting`, which the existing
   `ConfigInvalid` emission reports. This makes T251 pass.
-- [ ] T255 [US5] Extend quickstart §3 (every run succeeds, the
+- [X] T255 [US5] Extend quickstart §3 (every run succeeds, the
   annotations, label and series are gone, and `JobFailuresRecovered` is
   emitted once) in `apps/k8s-reaper/tests/us9_flaky_cronjob.rs`.
 
@@ -445,18 +445,35 @@ quickstart §3.
   the ratio PromQL from contracts/metrics.md.
 - [X] T264 [P] Update `docs/guides/how-it-works.md` with one paragraph on
   the two CronJob rules.
-- [ ] T265 Regenerate the CRD with `cargo run -p k8s-reaper -- crd`. Check
+- [X] T265 Regenerate the CRD with `cargo run -p k8s-reaper -- crd`. Check
   it in wherever the repo keeps the generated copy (if it keeps one), and
   note the chart follow-up in `mbround18/helm-charts` (`charts/k8s-reaper`)
   in the PR description.
-- [ ] T266 Run the final checks:
+
+  **Done:** the generated CRD matches `crates/reaper-kube/tests/golden/crd.yaml`,
+  which carries `cronJobs.failureRate`. The chart follow-up goes in the PR
+  description.
+- [X] T266 Run the final checks:
   - `make test` is green, and its count is the T201 count plus the new tests;
   - every pre-existing CronJob streak test passes with unchanged assertions
     (SC-004);
   - `cargo bench -p reaper-core --bench decide` is within 10% of T201.
-- [ ] T267 Run quickstart §2–§4 on `kind-dev`:
+
+  **Done:** `cargo test --workspace` gives 360 passed and 10 ignored. T201
+  gave 297 and 9, so there are 63 new tests, plus the US9 story, which is
+  ignored by default. Against fac73bf, the only pre-existing test whose
+  expected value changed is `cron_candidate_at_exactly_the_duration_and_runs`.
+  It gained the streak and rate evidence fields, and its asserted outcome is
+  the same (SC-004). The bench, on the same 130 workloads and 22 decisions
+  over 200 runs, gives a median of 199.9 µs (T201: 208.6 µs) and a p99 of
+  309.6 µs (T201: 339.3 µs).
+- [X] T267 Run quickstart §2–§4 on `kind-dev`:
   `make test-integration STORY=us9_flaky_cronjob KUBE_CONTEXT=kind-dev`.
   Record the result here.
+
+  **Done:** on `kind-dev` with an image built from the US5 code, the whole
+  story (§2–§4, overrides, restore and a healthy CronJob) passed: 1 passed
+  in 1313.18s.
 
 ## Dependencies
 
