@@ -138,7 +138,7 @@ streak thresholds.
 
 **Independent Test**: Unit tests on threshold resolution, plus one dev-cluster
 check that an annotation raising the window delays the candidate state and
-one that lowers it is ignored with a Warning Event.
+one that lowers it has no effect.
 
 **Acceptance Scenarios**:
 
@@ -150,8 +150,9 @@ one that lowers it is ignored with a Warning Event.
    used.
 3. **Given** a CronJob annotated with a smaller window or a lower threshold
    than the cluster's, **When** it is judged, **Then** the cluster's values
-   are used and an Event says the annotation was ignored, as for the
-   existing threshold annotations.
+   are used, as for the existing threshold annotations. A value that cannot
+   be parsed or is out of range is ignored and reported with a
+   `ConfigInvalid` Event.
 4. **Given** a CronJob annotated to turn the failure-rate rule off, **When**
    it is judged, **Then** only the streak rule applies to it.
 5. **Given** a ReaperConfig with a failure-rate setting out of range,
@@ -288,8 +289,10 @@ contract test asserting the new label value and series.
   of range make the config invalid, as for other settings.
 - **FR-010**: A CronJob MAY carry annotations that raise `windowRuns` or
   `threshold` for itself, or turn the failure-rate rule off for itself.
-  Values that would make it easier to trigger than the cluster's MUST be
-  ignored, with a Warning Event, as the existing threshold annotations are.
+  A value lower than the cluster's has no effect (the cluster's value is
+  used), and a value that cannot be parsed or is out of range is ignored and
+  reported with a `ConfigInvalid` Event, as for the existing threshold
+  annotations.
 - **FR-011**: A CronJob MUST be labelled `observed` while its window holds at
   least one failure or it has a failing streak, and MUST carry no run
   history once its window holds no failures.
