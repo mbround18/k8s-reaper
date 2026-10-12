@@ -9,18 +9,18 @@ API `events.k8s.io/v1`. `reportingController: reaper.boop.ninja/k8s-reaper`.
 | `CrashLoopObserved`  | Normal  | workload                 | `Observe`    | none → `observed`                                                                          |
 | `ReapPlanned`        | Warning | workload                 | `Plan`       | → `candidate`, effective mode `report`. Note lists the actions full mode would take         |
 | `ReapSkipped`        | Warning | workload                 | `Plan`       | candidate with a skip reason, or a new skip reason. Note: `reason=<SkipReason>; would: …` (see [Skip reasons](#skip-reasons)) |
-| `Reaped`             | Warning | workload                 | `ScaleDown`  | → `reaped`. Note: original replicas (or `suspended` for a CronJob), reason, Flux holds placed |
+| `Reaped`             | Warning | workload                 | `ScaleDown`  | → `reaped`. Note: original replicas (or `suspended` for a CronJob), reason, Flux holds placed (for a CronJob it names the rule met, see [annotations.md](./annotations.md)) |
 | `ReapFailed`         | Warning | workload                 | `ScaleDown`  | a reap step failed (API error, conflict). Retried next cycle                                |
 | `Restored`           | Normal  | workload                 | `Restore`    | restore finished. Note: a restore note (see [Restore notes](#restore-notes)), replicas, Flux holds released |
 | `RestoreFailed`      | Warning | workload                 | `Restore`    | a restore step failed. Retried next cycle                                                   |
 | `RestoreIgnored`     | Normal  | workload                 | `Restore`    | `restore` annotation on a workload the reaper holds no reap for                             |
 | `RecordFailed`       | Warning | workload                 | `Record`     | writing the reaper's own state label, record or plan annotation failed (not a conflict or not-found). Retried next cycle; counted as `reaper_actions_total{action="record",result="error"}` |
 | `CrashLoopRecovered` | Normal  | workload                 | `Recover`    | observed/candidate → none after `recoveryWindow` healthy                                    |
-| `JobFailuresObserved`| Normal  | CronJob                  | `Observe`    | none → `observed`: the latest finished Job failed. Note: failing since, last failed Job     |
-| `JobFailuresRecovered`| Normal | CronJob                  | `Recover`    | observed/candidate → none: a Job succeeded                                                  |
+| `JobFailuresObserved`| Normal  | CronJob                  | `Observe`    | none → `observed`: the latest finished Job failed. Note: failing since, last failed Job; when a run history exists it ends with `; window: <failed> of <runs> failed` |
+| `JobFailuresRecovered`| Normal | CronJob                  | `Recover`    | observed/candidate → none: a Job succeeded **and** the run history holds no failures. A success that ends the streak while the window still holds failures emits nothing |
 | `HelmReleaseHeld`    | Warning | HelmRelease              | `Suspend`    | first workload added to `held-for` (Note warns that the whole release is frozen)            |
 | `HelmReleaseReleased`| Normal  | HelmRelease              | `Resume`     | `held-for` became empty                                                                     |
-| `ConfigInvalid`      | Warning | ReaperConfig (or object) | `Validate`   | config, or a mode label value, failed validation; last valid config is kept                |
+| `ConfigInvalid`      | Warning | ReaperConfig (or object) | `Validate`   | config, or a mode label value, failed validation; last valid config is kept. On a CronJob also for an unusable `failure-window`, `failure-threshold` or `failure-rate`, or an unreadable `run-history` |
 | `ConfigApplied`      | Normal  | ReaperConfig             | `Validate`   | a new config generation became active                                                      |
 
 ## Restore notes

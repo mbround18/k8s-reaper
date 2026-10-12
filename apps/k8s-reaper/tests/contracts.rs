@@ -7,7 +7,10 @@ use std::collections::BTreeSet;
 
 use reaper_core::plan::{RestoreKind, SkipReason};
 use reaper_core::ports::ActionKind;
+use reaper_core::record::{PERSON_KEYS, RUN_HISTORY};
 
+const ANNOTATIONS: &str =
+    include_str!("../../../specs/001-crashloop-reaper/contracts/annotations.md");
 const EVENTS: &str = include_str!("../../../specs/001-crashloop-reaper/contracts/events.md");
 const METRICS: &str = include_str!("../../../specs/001-crashloop-reaper/contracts/metrics.md");
 
@@ -65,6 +68,20 @@ fn action_values(doc: &str) -> Vec<String> {
         .collect()
 }
 
+/// The `reaper.boop.ninja/` keys of every annotations table, with the
+/// "Set by" cell of their row.
+fn annotation_rows(doc: &str) -> Vec<(String, String)> {
+    doc.lines()
+        .filter_map(|line| {
+            let mut cells = line.trim().strip_prefix('|')?.split('|').map(str::trim);
+            let key = backticked(cells.next()?)?;
+            let set_by = cells.next()?.to_owned();
+            key.starts_with("reaper.boop.ninja/")
+                .then_some((key, set_by))
+        })
+        .collect()
+}
+
 /// Asserts the two sets are equal, naming what each side lacks.
 fn assert_same(what: &str, contract: &[String], code: &[&str]) {
     let contract_set: BTreeSet<&str> = contract.iter().map(String::as_str).collect();
@@ -110,6 +127,27 @@ fn actions_match_the_metrics_contract() {
 }
 
 #[test]
+fn person_keys_match_the_annotations_contract() {
+    // `restore` is person-set, but the reaper removes it once handled.
+    let person: Vec<String> = annotation_rows(ANNOTATIONS)
+        .into_iter()
+        .filter(|(key, set_by)| set_by == "person" && !key.ends_with("/restore"))
+        .map(|(key, _)| key)
+        .collect();
+    assert_same("annotations.md person keys", &person, &PERSON_KEYS);
+}
+
+#[test]
+fn run_history_is_a_reaper_key_in_the_annotations_contract() {
+    let rows = annotation_rows(ANNOTATIONS);
+    assert!(
+        rows.iter()
+            .any(|(key, set_by)| key == RUN_HISTORY && set_by == "reaper"),
+        "annotations.md has no reaper-set `{RUN_HISTORY}` row"
+    );
+}
+
+#[test]
 fn the_parsers_reject_what_they_cannot_read() {
     let doc = "## T\n\n| A | B |\n| - | - |\n| `x` | y |\n| `y` | z |\n\n## Next\n| `n` | m |\n";
     assert_eq!(table_keys(doc, "T"), ["x", "y"]);
@@ -117,4 +155,9 @@ fn the_parsers_reject_what_they_cannot_read() {
     assert!(std::panic::catch_unwind(|| table_keys(unquoted, "T")).is_err());
     let list = "| `action` ∈ `a`, `b_c`; `result` ∈ `d` |";
     assert_eq!(action_values(list), ["a", "b_c"]);
+    let rows = "| Key | Set by |\n| `reaper.boop.ninja/a` | person |\n| `other/b` | reaper |\n";
+    assert_eq!(
+        annotation_rows(rows),
+        [("reaper.boop.ninja/a".to_owned(), "person".to_owned())]
+    );
 }

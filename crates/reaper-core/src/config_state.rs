@@ -339,6 +339,8 @@ mod tests {
             state,
             skipped,
             crashloop_seconds: None,
+            window_runs: None,
+            rules: Vec::new(),
         };
         let c = Counts::from_rows(&[
             row("a", State::Observed, None),

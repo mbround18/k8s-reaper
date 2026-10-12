@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{NsName, ObjectRef, WorkloadRef};
-use crate::record::{PreviousReconcile, State};
+use crate::record::{PreviousReconcile, RunHistory, State};
 use crate::time::Timestamp;
 
 /// One concrete step. Reap steps run in the order listed; each one is
@@ -253,10 +253,26 @@ pub enum Evidence {
         last_exit: Option<crate::model::Termination>,
     },
     JobFailures {
+        /// 0 when the streak is not failing and the window alone is the
+        /// evidence.
         failed_runs: u32,
         last_failed_job: String,
         last_failure_reason: Option<String>,
+        /// Start of the failing streak, if it is failing.
+        streak_since: Option<Timestamp>,
+        /// The streak rule is met.
+        streak_met: bool,
+        /// The failure-rate window, while a run history exists (spec 003).
+        rate: Option<RateEvidence>,
     },
+}
+
+/// Failed runs out of the runs in the window, and whether the rate rule is met.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateEvidence {
+    pub failed: u32,
+    pub window: u32,
+    pub met: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +285,8 @@ pub struct Decision {
     /// when it crashes before the recovery window ends (FR-003).
     pub healthy_since: Option<Timestamp>,
     pub evidence: Option<Evidence>,
+    /// CronJob only: the run history to record (spec 003).
+    pub run_history: Option<RunHistory>,
 }
 
 /// A pod the reaper cannot attribute to a supported workload (US1 scenario 5).

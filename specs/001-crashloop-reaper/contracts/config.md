@@ -32,6 +32,10 @@ spec:
     enabled: true              # observe CronJobs and pause ones that keep failing
     failingDuration: 6h        # every run failed for this long (10m–168h)
     minFailedRuns: 3           # and at least this many failed runs (1–1000)
+    failureRate:               # or most recent runs failed (spec 003)
+      enabled: true
+      windowRuns: 10           # judge the last 10 recorded runs (3–100)
+      threshold: "80%"         # at least this share failed (51%–100%; "80" also accepted)
   notifications:               # US6; channel URLs come from a mounted Secret, never from here
     enabled: true
     reasons: [Reaped, ReapFailed, Restored, RestoreFailed, HelmReleaseHeld, ConfigInvalid]
@@ -64,6 +68,23 @@ Durations use the Go/Flux form (`90s`, `30m`, `1h30m`). Ranges and defaults are
 in [data-model.md](../data-model.md#validation-rules-config). The YAML above is
 printed by `k8s-reaper crd` (CRD) and is what the chart's `values.yaml`
 renders.
+
+### `cronJobs.failureRate`
+
+| Field        | Type    | Default | Valid        | Meaning |
+| ------------ | ------- | ------- | ------------ | ------- |
+| `enabled`    | bool    | `true`  | n/a          | `false` turns the rule off cluster-wide and removes every run history on the next cycle; the streak rule is unaffected |
+| `windowRuns` | integer | `10`    | 3–100        | Number of recorded runs judged. The rule waits until this many runs are recorded |
+| `threshold`  | string  | `80%`   | `51%`–`100%` | Share of failed runs in the window, inclusive, that makes a candidate |
+
+A CronJob becomes a candidate under this rule when its window is full, the
+failed share is at least `threshold`, the newest run failed, and its history
+began at least `failingDuration` ago. Out-of-range values make the
+ReaperConfig invalid; the CRD schema enforces the same ranges.
+
+**Upgrade note**: the rule is on by default. In `full` mode an upgrade can
+pause CronJobs that the streak rule never would. Run in `report` mode first,
+or set `failureRate.enabled: false`, to see the effect before it acts.
 
 The reaper reads the object (`metadata.name` from `--config-name`) once at the
 start of each cycle, so an edit takes effect on the next cycle without a

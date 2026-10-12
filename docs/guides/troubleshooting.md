@@ -109,7 +109,12 @@ A candidate needs **both** thresholds: crash-looping for at least
 - **CronJobs** need every run since the last success to have failed for
   `cronJobs.failingDuration` (default `6h`) **and** at least
   `cronJobs.minFailedRuns` (default `3`) failed Jobs. One successful Job
-  clears the streak.
+  clears the streak. Or, under the failure-rate rule, their last
+  `cronJobs.failureRate.windowRuns` (default `10`) recorded runs must be
+  full, at least `threshold` (default `80%`) failed, the newest failed, and
+  the run history must be at least `failingDuration` old. Check the counts
+  in `reaper.boop.ninja/run-history`, see
+  [CronJobs](cronjobs.md#reading-the-history).
 
 ## Reaping
 

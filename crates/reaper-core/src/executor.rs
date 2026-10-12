@@ -20,8 +20,8 @@ use crate::plan::{
     Action, CyclePlan, Decision, Evidence, Plan, RestoreKind, SkipReason, Transition,
 };
 use crate::ports::{
-    ActionKind, ActionResult, ClusterWriter, EventRecord, EventSink, EventType, Telemetry,
-    WorkloadRow, WriteError,
+    ActionKind, ActionResult, ClusterWriter, CronRule, EventRecord, EventSink, EventType,
+    Telemetry, WorkloadRow, WriteError,
 };
 use crate::record::{
     FLUX_RECONCILE, FLUX_RECONCILE_DISABLED, HELMRELEASE, LAST_FAILED_JOB, MetadataPatch,
@@ -656,11 +656,24 @@ fn reason(d: &Decision) -> String {
         failed_runs,
         last_failed_job,
         last_failure_reason,
+        streak_since,
+        streak_met,
+        rate,
     }) = &d.evidence
     {
-        let _ = write!(s, "{failed_runs} failed runs");
-        if let Some(since) = d.since {
-            let _ = write!(s, " since {since}");
+        // Spec 003: the rate rule names itself; the streak text is unchanged.
+        let rate = rate.filter(|r| r.met);
+        if let Some(r) = rate {
+            let _ = write!(s, "{} of last {} runs failed", r.failed, r.window);
+        }
+        if rate.is_none() || *streak_met {
+            if rate.is_some() {
+                s.push_str("; ");
+            }
+            let _ = write!(s, "{failed_runs} failed runs");
+            if let Some(since) = streak_since.or(d.since) {
+                let _ = write!(s, " since {since}");
+            }
         }
         let _ = write!(s, ", last job \"{last_failed_job}\" failed");
         if let Some(reason) = last_failure_reason {
@@ -705,16 +718,21 @@ fn desired_record(current: &WorkloadRecord, d: &Decision) -> WorkloadRecord {
                 ..current.clone()
             };
             if d.workload.kind == WorkloadKind::CronJob {
-                r.failing_since = d.since;
-                // A reap under way carries no evidence; keep the count.
+                r.run_history.clone_from(&d.run_history);
+                // A reap under way carries no evidence; keep the streak. The
+                // streak keys are kept only while it is failing.
                 if let Some(Evidence::JobFailures {
                     failed_runs,
                     last_failed_job,
+                    streak_since,
                     ..
                 }) = &d.evidence
                 {
-                    r.failed_runs = Some(*failed_runs);
-                    r.last_failed_job = Some(last_failed_job.clone());
+                    r.failing_since = *streak_since;
+                    r.failed_runs = streak_since.and(Some(*failed_runs));
+                    r.last_failed_job = streak_since.and(Some(last_failed_job.clone()));
+                } else {
+                    r.failing_since = d.since;
                 }
             } else {
                 r.crashloop_since = d.since;
@@ -771,14 +789,29 @@ fn published_skip(json: &str) -> Option<SkipReason> {
 fn note(d: &Decision, now: Timestamp) -> String {
     let mut s = String::new();
     let mut looping = "crash-looping";
+    let mut window = None;
     if let Some(Evidence::JobFailures {
         failed_runs,
         last_failed_job,
         last_failure_reason,
+        streak_met,
+        rate,
+        ..
     }) = &d.evidence
     {
         looping = "failing";
-        let _ = write!(s, "{failed_runs} failed runs, last job {last_failed_job}");
+        window = *rate;
+        let rate = rate.filter(|r| r.met);
+        if let Some(r) = rate {
+            let _ = write!(s, "{} of last {} runs failed", r.failed, r.window);
+        }
+        if rate.is_none() || *streak_met {
+            if rate.is_some() {
+                s.push_str("; ");
+            }
+            let _ = write!(s, "{failed_runs} failed runs");
+        }
+        let _ = write!(s, ", last job {last_failed_job}");
         if let Some(reason) = last_failure_reason {
             let _ = write!(s, " failed ({reason})");
         }
@@ -804,6 +837,9 @@ fn note(d: &Decision, now: Timestamp) -> String {
         }
         let minutes = now.seconds_since(since) / 60;
         let _ = write!(s, "{looping} since {since} ({minutes}m)");
+    }
+    if let (Plan::Observe, Some(w)) = (&d.plan, window) {
+        let _ = write!(s, "; window: {} of {} failed", w.failed, w.window);
     }
     let (prefix, actions) = match &d.plan {
         Plan::Reap { actions } => ("full mode would", actions.as_slice()),
@@ -881,11 +917,34 @@ fn rows(
                 }
                 _ => None,
             };
+            let decided = decision.filter(|_| written.contains_key(&w.workload));
+            let history = match decided {
+                Some(d) => d.run_history.as_ref(),
+                None => record.run_history.as_ref(),
+            };
+            let rules = match decided.and_then(|d| d.evidence.as_ref()) {
+                Some(Evidence::JobFailures {
+                    streak_met, rate, ..
+                }) if state == State::Candidate => [
+                    (*streak_met, CronRule::Streak),
+                    (rate.is_some_and(|r| r.met), CronRule::FailureRate),
+                ]
+                .into_iter()
+                .filter_map(|(met, rule)| met.then_some(rule))
+                .collect(),
+                _ => Vec::new(),
+            };
             Some(WorkloadRow {
                 workload: w.workload.clone(),
                 state,
                 skipped,
                 crashloop_seconds: since.map(|t| snap.now.seconds_since(t)),
+                window_runs: history.map(|h| {
+                    let failed = h.failed();
+                    let runs = u32::try_from(h.runs.len()).unwrap_or(u32::MAX);
+                    (failed, runs - failed)
+                }),
+                rules,
             })
         })
         .collect()
@@ -896,16 +955,18 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::decide::decide;
+    use crate::plan::RateEvidence;
+    use crate::record::RunHistory;
 
     use crate::ports::HelmReleasePatch;
     use crate::record::{
         CRASHLOOP_SINCE, FAILED_RUNS, FAILING_SINCE, HEALTHY_SINCE, HELD_FOR, LAST_FAILED_JOB,
-        PLAN, RESTORE, SUSPENDED_BY_REAPER,
+        PLAN, RESTORE, RUN_HISTORY, SUSPENDED_BY_REAPER,
     };
     use crate::testing::{
         Call, FakeEvents, FakeTelemetry, FakeWriter, add_pod, block_on, crashlooping_container,
-        cron_job, cron_mut, deployment, failed_job, healthy_container, helm_release, mins_ago,
-        snapshot, succeeded_job,
+        cron_job, cron_mut, deployment, failed_job, flaky_cron, healthy_container, helm_release,
+        mins_ago, snapshot, succeeded_job,
     };
 
     struct Run {
@@ -1663,6 +1724,10 @@ mod tests {
         let mut snap = failing_cron(Some("reaped"), 400);
         let c = &mut snap.workloads[0];
         c.reaper_annotations.insert(RESTORE.into(), "true".into());
+        c.reaper_annotations.insert(
+            crate::record::RUN_HISTORY.into(),
+            r#"{"since":"2026-10-12T00:00:00Z","runs":[{"job":"ingest-2","at":"2026-10-12T00:00:00Z","ok":false}]}"#.into(),
+        );
         cron_mut(c).suspended = true;
         let r = run(&snap, Mode::Report);
         let calls = r.writer.calls();
@@ -1677,6 +1742,8 @@ mod tests {
         let p = patch(&calls[1]);
         assert_eq!(p.labels[STATE_LABEL], None);
         assert_eq!(p.annotations[FAILING_SINCE], None);
+        // A restore starts the history over (FR-012).
+        assert_eq!(p.annotations[crate::record::RUN_HISTORY], None);
         // Kept, so failures from before the restore are not counted again.
         assert_eq!(p.annotations[LAST_FAILED_JOB].as_deref(), Some("ingest-2"));
         assert_eq!(r.events.reasons(), ["Restored"]);
@@ -1687,5 +1754,176 @@ mod tests {
             ActionResult::Success,
             Mode::Report
         )));
+    }
+
+    // Spec 003, US1: the failure-rate rule (T222)
+
+    fn flaky(pattern: &str) -> Snapshot {
+        let mut snap = snapshot();
+        snap.workloads.push(flaky_cron(pattern));
+        snap
+    }
+
+    fn first_note(r: &Run) -> String {
+        r.events.events.lock().unwrap()[0].note.clone()
+    }
+
+    fn cron_decision(failed_runs: u32, streak_met: bool, rate_met: bool) -> Decision {
+        Decision {
+            workload: ingest(),
+            plan: Plan::Observe,
+            since: Some(mins_ago(600)),
+            healthy_since: None,
+            evidence: Some(Evidence::JobFailures {
+                failed_runs,
+                last_failed_job: "ingest-9".into(),
+                last_failure_reason: Some("BackoffLimitExceeded".into()),
+                streak_since: Some(mins_ago(400)),
+                streak_met,
+                rate: Some(RateEvidence {
+                    failed: 8,
+                    window: 10,
+                    met: rate_met,
+                }),
+            }),
+            run_history: None,
+        }
+    }
+
+    #[test]
+    fn cron_reason_names_the_rule() {
+        let since = mins_ago(400);
+        let tail = "last job \"ingest-9\" failed (BackoffLimitExceeded)";
+        assert_eq!(
+            reason(&cron_decision(2, false, true)),
+            format!("8 of last 10 runs failed, {tail}")
+        );
+        assert_eq!(
+            reason(&cron_decision(7, true, false)),
+            format!("7 failed runs since {since}, {tail}")
+        );
+        assert_eq!(
+            reason(&cron_decision(7, true, true)),
+            format!("8 of last 10 runs failed; 7 failed runs since {since}, {tail}")
+        );
+    }
+
+    // Spec 003 US5: the window and rule gauges' rows (T250).
+
+    fn only_row(r: &Run) -> WorkloadRow {
+        let rows = r.telemetry.rows.lock().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:#?}");
+        rows[0].clone()
+    }
+
+    #[test]
+    fn a_rate_candidate_row_carries_its_window_and_rule() {
+        let row = only_row(&run(&flaky("FFSFFFFSFF"), Mode::Report));
+        assert_eq!(row.state, State::Candidate);
+        assert_eq!(row.window_runs, Some((8, 2)));
+        assert_eq!(row.rules, [CronRule::FailureRate]);
+        // The history began before the two-run streak.
+        assert_eq!(row.crashloop_seconds, Some(7 * 3600));
+    }
+
+    #[test]
+    fn a_reaped_cron_row_keeps_its_window_and_names_no_rule() {
+        let row = only_row(&run(&flaky("FFSFFFFSFF"), Mode::Full));
+        assert_eq!(row.state, State::Reaped);
+        assert_eq!(row.window_runs, Some((8, 2)));
+        assert_eq!(row.rules, []);
+        assert_eq!(row.crashloop_seconds, Some(7 * 3600));
+    }
+
+    #[test]
+    fn cron_rate_report_mode_plans_without_suspending() {
+        let r = run(&flaky("FFSFFFFSFF"), Mode::Report);
+        let calls = r.writer.calls();
+        assert_eq!(calls.len(), 1, "{calls:#?}");
+        let p = patch(&calls[0]);
+        assert_eq!(p.labels[STATE_LABEL].as_deref(), Some("candidate"));
+        assert_eq!(
+            p.annotations[FAILING_SINCE].as_deref(),
+            Some(mins_ago(2).to_string().as_str())
+        );
+        // Nothing new was recorded, so the history is not rewritten.
+        assert!(!p.annotations.contains_key(RUN_HISTORY));
+        assert_eq!(r.events.reasons(), ["ReapPlanned"]);
+        let note = first_note(&r);
+        assert!(
+            note.starts_with(
+                "8 of last 10 runs failed, last job ingest-9 failed (BackoffLimitExceeded); \
+                 failing since "
+            ),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn cron_rate_full_mode_suspends_and_records_the_rate() {
+        let r = run(&flaky("FFSFFFFSFF"), Mode::Full);
+        let calls = r.writer.calls();
+        assert_eq!(calls.len(), 4, "{calls:#?}");
+        assert_eq!(
+            patch(&calls[1]).annotations[REASON].as_deref(),
+            Some("8 of last 10 runs failed, last job \"ingest-9\" failed (BackoffLimitExceeded)")
+        );
+        assert!(matches!(
+            calls[2],
+            Call::SetCronJobSuspend { suspend: true, .. }
+        ));
+        assert_eq!(r.events.reasons(), ["Reaped"]);
+        assert!(
+            first_note(&r)
+                .starts_with("suspended; 8 of last 10 runs failed, last job \"ingest-9\""),
+            "{}",
+            first_note(&r)
+        );
+    }
+
+    #[test]
+    fn cron_first_sighting_note_ends_with_the_window() {
+        let r = run(&failing_cron(None, 60), Mode::Report);
+        let p = patch(&r.writer.calls()[0]).clone();
+        let history = p.annotations[RUN_HISTORY].clone().expect("a history");
+        assert_eq!(RunHistory::decode(&history).map(|h| h.failed()), Some(3));
+        assert!(
+            first_note(&r).ends_with("; window: 3 of 3 failed"),
+            "{}",
+            first_note(&r)
+        );
+    }
+
+    #[test]
+    fn cron_success_with_failures_in_the_window_stays_observed_quietly() {
+        let mut snap = flaky("FFFFFFFFFS");
+        let c = &mut snap.workloads[0];
+        c.reaper_annotations
+            .insert(FAILING_SINCE.into(), mins_ago(7 * 60).to_string());
+        c.reaper_annotations.insert(FAILED_RUNS.into(), "8".into());
+        c.reaper_annotations
+            .insert(LAST_FAILED_JOB.into(), "ingest-8".into());
+        let r = run(&snap, Mode::Report);
+        let p = patch(&r.writer.calls()[0]).clone();
+        assert!(!p.labels.contains_key(STATE_LABEL));
+        for key in [FAILING_SINCE, FAILED_RUNS, LAST_FAILED_JOB] {
+            assert_eq!(p.annotations[key], None, "{key}");
+        }
+        assert!(!p.annotations.contains_key(RUN_HISTORY));
+        assert_eq!(r.events.reasons(), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn cron_reaped_keeps_its_history() {
+        let mut snap = flaky("FFSFFFFSFF");
+        let c = &mut snap.workloads[0];
+        c.state_label = Some("reaped".into());
+        cron_mut(c).suspended = true;
+        let r = run(&snap, Mode::Full);
+        for call in r.writer.calls() {
+            if let Call::PatchMetadata { patch, .. } = call {
+                assert!(!patch.annotations.contains_key(RUN_HISTORY), "{patch:?}");
+            }
+        }
     }
 }

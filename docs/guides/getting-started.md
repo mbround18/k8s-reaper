@@ -124,7 +124,8 @@ A workload goes through these states:
 | `reaped`    | Full mode only: the workload is stopped. |
 
 A CronJob becomes a candidate when every run has failed for at least 6 hours
-**and** at least 3 runs have failed. One successful run clears it.
+**and** at least 3 runs have failed, or when at least 8 of its last 10 runs
+failed, the newest included. See [CronJobs](cronjobs.md).
 
 A workload that stays healthy for 10 minutes loses its state. Image pull
 failures (`ImagePullBackOff`, `ErrImagePull`) are not crash loops and are

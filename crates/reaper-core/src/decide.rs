@@ -10,19 +10,25 @@ use std::time::Duration;
 
 use crate::config::{
     CRASH_LOOP_DURATION_RANGE, Config, FAILING_DURATION_RANGE, MIN_FAILED_RUNS_RANGE,
-    MIN_RESTARTS_RANGE, Mode, parse_mode_override,
+    MIN_RESTARTS_RANGE, Mode, THRESHOLD_RANGE, WINDOW_RUNS_RANGE, parse_mode_override,
+    parse_percent,
 };
-use crate::detect::{JobStreak, WorkloadPods, group_pods, job_streak};
+use crate::detect::{
+    JobStreak, Streak, WorkloadPods, group_pods, job_streak, rate_met, update_history,
+};
 use crate::glob::any_matches;
 use crate::model::{
-    CronJobView, NsName, ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadRef, WorkloadView,
+    CronJobView, JobOutcome, NsName, ObjectKind, ObjectRef, Snapshot, WorkloadKind, WorkloadRef,
+    WorkloadView,
 };
 use crate::plan::{
-    Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, RestoreKind, SkipReason, StaleHold,
+    Action, CyclePlan, Decision, Evidence, InvalidSetting, Plan, RateEvidence, RestoreKind,
+    SkipReason, StaleHold,
 };
 use crate::record::{
-    CRASHLOOP_DURATION, FAILING_DURATION, FLUX_RECONCILE_DISABLED, HelmReleaseHold,
-    MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE, State, WorkloadRecord,
+    CRASHLOOP_DURATION, FAILING_DURATION, FAILURE_RATE, FAILURE_THRESHOLD, FAILURE_WINDOW,
+    FLUX_RECONCILE_DISABLED, HelmReleaseHold, MIN_FAILED_RUNS, MIN_RESTARTS, MODE_KEY, RESTORE,
+    RUN_HISTORY, RunHistory, State, WorkloadRecord,
 };
 use crate::time::parse_duration;
 
@@ -73,7 +79,10 @@ pub fn decide(snap: &Snapshot, config: &Config) -> CyclePlan {
             let thresholds = Thresholds::for_workload(config, w, &mut invalid);
             Some(match &w.cron_job {
                 // CronJobs are decided from Jobs, not pods (US5).
-                Some(cron) => decide_cron_job(snap, config, w, cron, mode, &thresholds),
+                Some(cron) => {
+                    report_unreadable_history(w, &mut invalid);
+                    decide_cron_job(snap, config, w, cron, mode, &thresholds)
+                }
                 None => decide_workload(snap, config, w, pods.get(&w.workload), mode, &thresholds),
             })
         })
@@ -96,6 +105,20 @@ pub fn decide(snap: &Snapshot, config: &Config) -> CyclePlan {
         unsupported,
         invalid_settings: invalid.into_iter().collect(),
         stale_holds: stale_holds(snap),
+    }
+}
+
+/// A `run-history` the reaper cannot read is reported and treated as empty;
+/// the next write replaces it (003 FR-014).
+fn report_unreadable_history(w: &WorkloadView, invalid: &mut BTreeSet<InvalidSetting>) {
+    if let Some(v) = w.reaper_annotations.get(RUN_HISTORY)
+        && RunHistory::decode(v).is_none()
+    {
+        invalid.insert(InvalidSetting {
+            object: w.workload.object_ref(),
+            key: RUN_HISTORY.into(),
+            value: v.clone(),
+        });
     }
 }
 
@@ -181,13 +204,25 @@ fn out_of_scope(snap: &Snapshot, w: &WorkloadView) -> Option<Decision> {
     if !matches!(record.state, Some(State::Reaping | State::Reaped)) {
         return None;
     }
+    let plan = held_plan(snap, w, &record, Mode::Off);
     Some(Decision {
         workload: w.workload.clone(),
-        plan: held_plan(snap, w, &record, Mode::Off),
-        since: record.crashloop_since.or(record.failing_since),
+        since: record.since(),
+        run_history: kept_history(&plan, record.run_history),
+        plan,
         healthy_since: None,
         evidence: None,
     })
+}
+
+/// A held CronJob keeps its history to explain the reap; a restore starts it
+/// over (FR-012).
+fn kept_history(plan: &Plan, history: Option<RunHistory>) -> Option<RunHistory> {
+    if matches!(plan, Plan::Restore { .. }) {
+        None
+    } else {
+        history
+    }
 }
 
 /// The most restrictive mode set by labels or annotations on the namespace and
@@ -236,6 +271,9 @@ struct Thresholds {
     min_restarts: u32,
     failing_duration: Duration,
     min_failed_runs: u32,
+    failure_rate_enabled: bool,
+    window_runs: u32,
+    threshold: u8,
 }
 
 impl Thresholds {
@@ -282,19 +320,43 @@ impl Thresholds {
                 }
             })
         };
+        let min_restarts = count(
+            MIN_RESTARTS,
+            MIN_RESTARTS_RANGE,
+            config.detection.min_restarts,
+        );
+        let min_failed_runs = count(
+            MIN_FAILED_RUNS,
+            MIN_FAILED_RUNS_RANGE,
+            config.cron_jobs.min_failed_runs,
+        );
+        let rate = &config.cron_jobs.failure_rate;
+        let window_runs = count(FAILURE_WINDOW, WINDOW_RUNS_RANGE, rate.window_runs);
+        let threshold = get(FAILURE_THRESHOLD).map_or(rate.threshold, |v| {
+            let (min, max) = THRESHOLD_RANGE;
+            match parse_percent(v) {
+                Some(p) if (min..=max).contains(&p) => p.max(rate.threshold),
+                _ => {
+                    bad(FAILURE_THRESHOLD, v);
+                    rate.threshold
+                }
+            }
+        });
+        // `off` is the only value: an annotation can turn the rule off, never on.
+        let turned_off = get(FAILURE_RATE).is_some_and(|v| {
+            if v != "off" {
+                bad(FAILURE_RATE, v);
+            }
+            v == "off"
+        });
         Thresholds {
             crash_loop_duration,
-            min_restarts: count(
-                MIN_RESTARTS,
-                MIN_RESTARTS_RANGE,
-                config.detection.min_restarts,
-            ),
+            min_restarts,
             failing_duration,
-            min_failed_runs: count(
-                MIN_FAILED_RUNS,
-                MIN_FAILED_RUNS_RANGE,
-                config.cron_jobs.min_failed_runs,
-            ),
+            min_failed_runs,
+            failure_rate_enabled: rate.enabled && !turned_off,
+            window_runs,
+            threshold,
         }
     }
 }
@@ -314,6 +376,7 @@ fn decide_workload(
         since,
         healthy_since,
         evidence,
+        run_history: None,
     };
     let has_state = record.state.is_some() || record.crashloop_since.is_some();
 
@@ -376,8 +439,10 @@ fn decide_workload(
 }
 
 /// A CronJob, decided from its Jobs (FR-028 to FR-033). Like any workload
-/// once held; otherwise failing runs take the place of a crash loop, and a
-/// success clears state at once, with no recovery window.
+/// once held; otherwise failing runs take the place of a crash loop. Two
+/// rules make a candidate: the failing streak, and the failure rate over the
+/// recorded run history (spec 003). State clears once the streak passes and
+/// the window holds no failure, with no recovery window.
 fn decide_cron_job(
     snap: &Snapshot,
     config: &Config,
@@ -387,23 +452,30 @@ fn decide_cron_job(
     thresholds: &Thresholds,
 ) -> Decision {
     let (record, _) = WorkloadRecord::decode(&w.reaper_annotations, w.state_label.as_deref());
-    let decision = |plan, since, evidence| Decision {
+    let decision = |plan, since, evidence, run_history| Decision {
         workload: w.workload.clone(),
         plan,
         since,
         healthy_since: None,
         evidence,
+        run_history,
     };
-    let has_state = record.state.is_some() || record.failing_since.is_some();
+    let tracked =
+        record.state.is_some() || record.failing_since.is_some() || record.run_history.is_some();
+    // An unreadable history is still there to be removed (FR-014).
+    let has_state =
+        tracked || (w.reaper_annotations.contains_key(RUN_HISTORY) && record.run_history.is_none());
 
     match record.state {
         // Restore keeps working with `cronJobs.enabled: false` (FR-033).
         Some(State::Reaped | State::Reaping) => {
             let plan = held_plan(snap, w, &record, mode);
-            return decision(plan, record.failing_since, None);
+            let since = record.since();
+            let history = kept_history(&plan, record.run_history);
+            return decision(plan, since, None, history);
         }
         _ if record.restore && mode != Mode::Off => {
-            return decision(Plan::RestoreIgnored, None, None);
+            return decision(Plan::RestoreIgnored, None, None, None);
         }
         _ => {}
     }
@@ -414,36 +486,111 @@ fn decide_cron_job(
         } else {
             Plan::Nothing
         };
-        return decision(plan, None, None);
+        return decision(plan, None, None, None);
     }
 
-    let streak = match job_streak(cron, &record) {
-        JobStreak::Unknown => return decision(Plan::Nothing, None, None),
-        JobStreak::Passing => {
-            let plan = if has_state {
-                Plan::Recover
-            } else {
-                Plan::Nothing
-            };
-            return decision(plan, None, None);
-        }
-        JobStreak::Failing(streak) => streak,
+    let streak = job_streak(cron, &record);
+    if streak == JobStreak::Unknown {
+        return decision(Plan::Nothing, None, None, None);
+    }
+    let history = if thresholds.failure_rate_enabled {
+        update_history(
+            record.run_history.clone(),
+            cron,
+            &streak,
+            thresholds.window_runs,
+        )
+    } else {
+        None
     };
-    let is_candidate = snap
-        .now
-        .elapsed_at_least(streak.since, thresholds.failing_duration)
-        && streak.failed_runs >= thresholds.min_failed_runs;
-    let plan = if is_candidate {
+    let failing = if let JobStreak::Failing(s) = streak {
+        Some(s)
+    } else {
+        None
+    };
+    if failing.is_none() && history.is_none() {
+        // Turning the rule off is not a recovery: drop its history quietly.
+        let plan = if !has_state {
+            Plan::Nothing
+        } else if tracked && (thresholds.failure_rate_enabled || record.failing_since.is_some()) {
+            Plan::Recover
+        } else {
+            Plan::Forget
+        };
+        return decision(plan, None, None, None);
+    }
+
+    let streak_met = failing.as_ref().is_some_and(|s| {
+        snap.now
+            .elapsed_at_least(s.since, thresholds.failing_duration)
+            && s.failed_runs >= thresholds.min_failed_runs
+    });
+    let rate = history.as_ref().map(|h| {
+        rate_met(
+            h,
+            thresholds.failure_rate_enabled,
+            thresholds.window_runs,
+            thresholds.threshold,
+            thresholds.failing_duration,
+            snap.now,
+        )
+    });
+    let plan = if streak_met || rate.is_some_and(|r| r.met) {
         candidate_plan(snap, config, w, mode)
     } else {
         Plan::Observe
     };
-    let evidence = Evidence::JobFailures {
-        failed_runs: streak.failed_runs,
-        last_failed_job: streak.last_failed_job,
-        last_failure_reason: streak.last_failure_reason,
-    };
-    decision(plan, Some(streak.since), Some(evidence))
+    // FR-007: ordered by the earliest start among the rules.
+    let since = [
+        failing.as_ref().map(|s| s.since),
+        history.as_ref().map(|h| h.since),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    let evidence = job_failures(failing, streak_met, rate, history.as_ref(), cron);
+    decision(plan, since, Some(evidence), history)
+}
+
+/// The evidence for a CronJob: its failing streak, or when the streak is not
+/// failing, the window's newest failure, which is never an inferred run.
+fn job_failures(
+    failing: Option<Streak>,
+    streak_met: bool,
+    rate: Option<RateEvidence>,
+    history: Option<&RunHistory>,
+    cron: &CronJobView,
+) -> Evidence {
+    if let Some(s) = failing {
+        return Evidence::JobFailures {
+            failed_runs: s.failed_runs,
+            last_failed_job: s.last_failed_job,
+            last_failure_reason: s.last_failure_reason,
+            streak_since: Some(s.since),
+            streak_met,
+            rate,
+        };
+    }
+    let job = history
+        .and_then(|h| h.runs.iter().rev().find(|r| !r.ok))
+        .and_then(|r| r.job.clone())
+        .unwrap_or_default();
+    let reason = cron
+        .jobs
+        .iter()
+        .find(|j| j.name == job)
+        .and_then(|j| match &j.outcome {
+            JobOutcome::Failed { reason, .. } => reason.clone(),
+            _ => None,
+        });
+    Evidence::JobFailures {
+        failed_runs: 0,
+        last_failed_job: job,
+        last_failure_reason: reason,
+        streak_since: None,
+        streak_met: false,
+        rate,
+    }
 }
 
 fn candidate_plan(snap: &Snapshot, config: &Config, w: &WorkloadView, mode: Mode) -> Plan {
@@ -680,12 +827,13 @@ mod tests {
     use super::*;
     use crate::model::{NsName, WorkloadRef};
     use crate::record::{
-        CRASHLOOP_SINCE, FAILING_SINCE, HEALTHY_SINCE, HELMRELEASE, ORIGINAL_REPLICAS,
-        PREVIOUS_RECONCILE, PreviousReconcile,
+        CRASHLOOP_SINCE, FAILING_SINCE, HEALTHY_SINCE, HELMRELEASE, LAST_FAILED_JOB,
+        ORIGINAL_REPLICAS, PREVIOUS_RECONCILE, PreviousReconcile, RUN_HISTORY,
     };
     use crate::testing::{
         NOW, add_namespace, add_pod, crashlooping_container, cron_job, cron_mut, deployment,
-        failed_job, healthy_container, helm_release, mins_ago, snapshot, succeeded_job, workload,
+        failed_job, flaky_cron, healthy_container, helm_release, mins_ago, snapshot, succeeded_job,
+        workload,
     };
 
     /// A Deployment whose pod crash-loops with `restarts`, first observed
@@ -1775,6 +1923,14 @@ mod tests {
                 failed_runs: 3,
                 last_failed_job: "ingest-2".into(),
                 last_failure_reason: Some("BackoffLimitExceeded".into()),
+                streak_since: Some(mins_ago(360)),
+                streak_met: true,
+                // Spec 003: three runs do not fill the window.
+                rate: Some(RateEvidence {
+                    failed: 3,
+                    window: 3,
+                    met: false,
+                }),
             })
         );
     }
@@ -1979,5 +2135,363 @@ mod tests {
         snap.workloads = vec![c];
         let p = decide(&snap, &config);
         assert_eq!(restore_of(&p, "ingest").0, RestoreKind::Requested);
+    }
+
+    // Spec 003, US1: the failure-rate rule (T221)
+
+    fn history_of(d: &Decision) -> String {
+        d.run_history
+            .as_ref()
+            .map(RunHistory::encode)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn rate_only_candidate_below_the_streak_thresholds() {
+        // The streak since the last success is 2 runs, 2 minutes old.
+        let p = run(snapshot(), vec![flaky_cron("FFSFFFFSFF")]);
+        let d = only(&p);
+        assert_eq!(
+            d.plan,
+            Plan::Reap {
+                actions: cron_reap()
+            }
+        );
+        assert_eq!(d.since, Some(mins_ago(7 * 60)));
+        assert_eq!(
+            d.evidence,
+            Some(Evidence::JobFailures {
+                failed_runs: 2,
+                last_failed_job: "ingest-9".into(),
+                last_failure_reason: Some("BackoffLimitExceeded".into()),
+                streak_since: Some(mins_ago(2)),
+                streak_met: false,
+                rate: Some(RateEvidence {
+                    failed: 8,
+                    window: 10,
+                    met: true,
+                }),
+            })
+        );
+        // Nothing new was recorded.
+        let c = flaky_cron("FFSFFFFSFF");
+        assert_eq!(&history_of(d), &c.reaper_annotations[RUN_HISTORY]);
+    }
+
+    #[test]
+    fn rate_candidate_is_held_by_flux_as_for_the_streak() {
+        let mut snap = snapshot();
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.flux.kustomization = Some(NsName::new("flux-system", "apps"));
+        snap.workloads = vec![c];
+        let p = decide(&snap, &Config::default());
+        let Plan::Reap { actions } = reap_of(&p, "ingest") else {
+            panic!("not a reap");
+        };
+        assert!(actions.contains(&Action::SuspendCronJob));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::DisableKustomizeReconcile(_)))
+        );
+    }
+
+    #[test]
+    fn rate_rule_disabled_leaves_the_streak_alone() {
+        let mut config = Config::default();
+        config.cron_jobs.failure_rate.enabled = false;
+        let mut snap = snapshot();
+        snap.workloads = vec![flaky_cron("FFSFFFFSFF")];
+        let p = decide(&snap, &config);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        assert_eq!(d.since, Some(mins_ago(2)));
+        assert_eq!(d.run_history, None);
+    }
+
+    #[test]
+    fn newest_run_succeeded_while_the_window_holds_failures_is_observed() {
+        let p = run(snapshot(), vec![flaky_cron("FFFFFFFFFS")]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        assert_eq!(d.since, Some(mins_ago(7 * 60)));
+        assert_eq!(
+            d.evidence,
+            Some(Evidence::JobFailures {
+                failed_runs: 0,
+                last_failed_job: "ingest-8".into(),
+                last_failure_reason: Some("BackoffLimitExceeded".into()),
+                streak_since: None,
+                streak_met: false,
+                rate: Some(RateEvidence {
+                    failed: 9,
+                    window: 10,
+                    met: false,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn window_cleared_with_a_passing_streak_recovers() {
+        let mut config = Config::default();
+        config.cron_jobs.failure_rate.window_runs = 3;
+        let mut c = flaky_cron("FSS");
+        cron_mut(&mut c).jobs.push(succeeded_job("ingest-3", 0));
+        cron_mut(&mut c).last_successful_time = Some(NOW);
+        let mut snap = snapshot();
+        snap.workloads = vec![c];
+        let p = decide(&snap, &config);
+        assert_eq!(only(&p).plan, Plan::Recover);
+    }
+
+    #[test]
+    fn rate_candidates_are_ordered_by_history_start() {
+        let mut snap = snapshot();
+        let web = add_looping(&mut snap, "web", 60);
+        snap.workloads = vec![web, flaky_cron("FFSFFFFSFF")];
+        let p = decide(&snap, &Config::default());
+        // The history began seven hours ago, before the crash loop.
+        assert!(matches!(reap_of(&p, "ingest"), Plan::Reap { .. }));
+        assert_eq!(skip_of(&reap_of(&p, "web")), Some(SkipReason::RateLimited));
+    }
+
+    // Spec 003 US3: per-CronJob overrides and turning the rule off.
+
+    /// Thresholds for `app/ingest` with these annotations, against the
+    /// default cluster window of 10 and threshold of 80.
+    fn rate_overrides(pairs: &[(&str, &str)]) -> (Thresholds, Vec<String>) {
+        let mut w = cron_job("app", "ingest");
+        for (k, v) in pairs {
+            w.reaper_annotations.insert((*k).into(), (*v).into());
+        }
+        let mut invalid = BTreeSet::new();
+        let t = Thresholds::for_workload(&Config::default(), &w, &mut invalid);
+        (t, invalid.into_iter().map(|i| i.key).collect())
+    }
+
+    #[test]
+    fn failure_window_override_only_raises_it() {
+        let window = |v| {
+            let (t, invalid) = rate_overrides(&[(FAILURE_WINDOW, v)]);
+            (t.window_runs, invalid)
+        };
+        assert_eq!(window("15"), (15, vec![]));
+        assert_eq!(window("5"), (10, vec![]));
+        for bad in ["2", "101", "x"] {
+            assert_eq!(window(bad), (10, vec![FAILURE_WINDOW.to_owned()]), "{bad}");
+        }
+    }
+
+    #[test]
+    fn failure_threshold_override_only_raises_it() {
+        let threshold = |v| {
+            let (t, invalid) = rate_overrides(&[(FAILURE_THRESHOLD, v)]);
+            (t.threshold, invalid)
+        };
+        assert_eq!(threshold("90"), (90, vec![]));
+        assert_eq!(threshold("90%"), (90, vec![]));
+        assert_eq!(threshold("60"), (80, vec![]));
+        for bad in ["50", "abc"] {
+            assert_eq!(
+                threshold(bad),
+                (80, vec![FAILURE_THRESHOLD.to_owned()]),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_rate_off_is_the_only_value_it_takes() {
+        let enabled = |v| {
+            let (t, invalid) = rate_overrides(&[(FAILURE_RATE, v)]);
+            (t.failure_rate_enabled, invalid)
+        };
+        assert_eq!(enabled("off"), (false, vec![]));
+        for bad in ["on", "yes"] {
+            assert_eq!(enabled(bad), (true, vec![FAILURE_RATE.to_owned()]), "{bad}");
+        }
+        assert!(rate_overrides(&[]).0.failure_rate_enabled);
+    }
+
+    #[test]
+    fn rate_rule_off_by_annotation_leaves_the_streak_alone() {
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.reaper_annotations
+            .insert(FAILURE_RATE.into(), "off".into());
+        let p = run(snapshot(), vec![c]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        assert_eq!(d.since, Some(mins_ago(2)));
+        assert_eq!(d.run_history, None);
+    }
+
+    #[test]
+    fn rate_rule_off_without_a_streak_forgets_the_history_quietly() {
+        let mut c = flaky_cron("FFFFFFFFFS");
+        c.reaper_annotations
+            .insert(FAILURE_RATE.into(), "off".into());
+        let p = run(snapshot(), vec![c]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Forget);
+        assert_eq!(d.run_history, None);
+    }
+
+    #[test]
+    fn rate_rule_turned_back_on_starts_from_the_current_streak() {
+        let mut c = flaky_cron("FFSFF");
+        c.reaper_annotations.remove(RUN_HISTORY);
+        let p = run(snapshot(), vec![c]);
+        let h = only(&p).run_history.clone().expect("a new history");
+        assert_eq!(h.since, mins_ago(2));
+        assert!(h.runs.iter().all(|r| !r.ok), "{h:?}");
+        assert_eq!(h.runs.len(), 2, "{h:?}");
+    }
+
+    // Spec 003 US4: a restore starts a clean slate (T240, T241).
+
+    /// `app/ingest` reaped under the rate rule, its history still on it.
+    /// The newest listed Job, `ingest-9`, failed.
+    fn reaped_flaky(suspended: bool) -> WorkloadView {
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.state_label = Some("reaped".into());
+        cron_mut(&mut c).suspended = suspended;
+        c
+    }
+
+    fn assert_clean_restore(p: &CyclePlan, kind: RestoreKind) {
+        let d = only(p);
+        let (got, actions) = restore_of(p, "ingest");
+        assert_eq!(got, kind);
+        assert_eq!(
+            actions.last(),
+            Some(&Action::ClearReaperState {
+                restore_reconcile: None,
+                last_counted_job: Some("ingest-9".into()),
+            })
+        );
+        assert_eq!(d.run_history, None, "{kind:?}");
+    }
+
+    #[test]
+    fn every_restore_of_a_rate_reap_drops_the_history() {
+        let mut c = reaped_flaky(true);
+        c.reaper_annotations.insert(RESTORE.into(), "true".into());
+        assert_clean_restore(&run(snapshot(), vec![c]), RestoreKind::Requested);
+
+        let c = reaped_flaky(false);
+        assert_clean_restore(&run(snapshot(), vec![c]), RestoreKind::ManualResume);
+
+        let mut c = reaped_flaky(true);
+        c.mode_annotation = Some("off".into());
+        assert_clean_restore(&run(snapshot(), vec![c]), RestoreKind::OptedOut);
+
+        // The HelmRelease the reaper suspended for it was resumed.
+        let mut snap = snapshot();
+        let mut hr = helm_release("helm", "app");
+        hr.reaper_annotations.insert(
+            crate::record::HELD_FOR.into(),
+            r#"["CronJob/app/ingest"]"#.into(),
+        );
+        hr.reaper_annotations
+            .insert(crate::record::SUSPENDED_BY_REAPER.into(), "true".into());
+        snap.helm_releases.insert(hr.helm_release.clone(), hr);
+        let mut c = reaped_flaky(true);
+        c.flux.helm_release = Some(NsName::new("helm", "app"));
+        c.reaper_annotations
+            .insert(HELMRELEASE.into(), "helm/app".into());
+        assert_clean_restore(&run(snap, vec![c]), RestoreKind::ManualResume);
+    }
+
+    /// `app/ingest` as the restore left it: only `last-failed-job`, with the
+    /// Jobs from before the restore still listed.
+    fn restored_flaky() -> WorkloadView {
+        let mut c = reaped_flaky(false);
+        c.state_label = None;
+        c.reaper_annotations.clear();
+        c.reaper_annotations
+            .insert(LAST_FAILED_JOB.into(), "ingest-9".into());
+        c
+    }
+
+    #[test]
+    fn jobs_from_before_a_restore_are_not_recorded_again() {
+        let p = run(snapshot(), vec![restored_flaky()]);
+        assert_eq!(p.decisions, Vec::<Decision>::new());
+    }
+
+    #[test]
+    fn the_first_failure_after_a_restore_starts_a_one_run_history() {
+        let mut c = restored_flaky();
+        cron_mut(&mut c).jobs.push(failed_job("ingest-10", 0));
+        let p = run(snapshot(), vec![c]);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        let h = d.run_history.as_ref().expect("a new history");
+        assert_eq!(h.since, NOW);
+        assert_eq!(h.runs.len(), 1, "{h:?}");
+        assert_eq!(h.runs[0].job.as_deref(), Some("ingest-10"));
+    }
+
+    #[test]
+    fn a_history_is_forgotten_when_the_reaper_stops_watching() {
+        let forgotten = |p: &CyclePlan, case: &str| {
+            let d = only(p);
+            assert_eq!(d.plan, Plan::Forget, "{case}");
+            assert_eq!(d.run_history, None, "{case}");
+        };
+        let mut c = flaky_cron("FFSFFFFSFF");
+        c.mode_annotation = Some("off".into());
+        forgotten(&run(snapshot(), vec![c]), "mode=off");
+
+        let mut config = Config::default();
+        config.cron_jobs.enabled = false;
+        let mut snap = snapshot();
+        snap.workloads = vec![flaky_cron("FFSFFFFSFF")];
+        forgotten(&decide(&snap, &config), "cronJobs.enabled: false");
+
+        let mut c = flaky_cron("FFSFFFFSFF");
+        cron_mut(&mut c).suspended = true;
+        forgotten(&run(snapshot(), vec![c]), "suspended by someone else");
+    }
+
+    // Spec 003 US5: an unreadable history is reported (T251).
+
+    fn with_bad_history(mut c: WorkloadView) -> WorkloadView {
+        c.reaper_annotations
+            .insert(RUN_HISTORY.into(), "not json".into());
+        c
+    }
+
+    fn reported_bad_history(p: &CyclePlan) {
+        let bad: Vec<_> = p
+            .invalid_settings
+            .iter()
+            .map(|s| (s.key.as_str(), s.value.as_str()))
+            .collect();
+        assert_eq!(bad, [(RUN_HISTORY, "not json")]);
+    }
+
+    #[test]
+    fn an_unreadable_history_is_reported_and_started_over() {
+        let c = with_bad_history(failing_cron("ingest", &[3]));
+        let p = run(snapshot(), vec![c]);
+        reported_bad_history(&p);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Observe);
+        // The decision's history replaces the bad value when it is written.
+        let h = d.run_history.as_ref().expect("a new history");
+        assert_eq!(h.runs.len(), 1, "{h:?}");
+    }
+
+    #[test]
+    fn an_unreadable_history_with_nothing_failing_is_forgotten() {
+        let mut c = with_bad_history(cron_job("app", "ingest"));
+        cron_mut(&mut c).jobs = vec![succeeded_job("ingest-0", 3)];
+        let p = run(snapshot(), vec![c]);
+        reported_bad_history(&p);
+        let d = only(&p);
+        assert_eq!(d.plan, Plan::Forget);
+        assert_eq!(d.run_history, None);
     }
 }

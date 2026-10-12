@@ -148,6 +148,19 @@ at least `minFailedRuns` failed runs have been counted.
 | `enabled`         | bool     | `true`  |                  | Watch CronJobs at all. Turning it off stops watching, but restoring a CronJob that is already paused still works. |
 | `failingDuration` | duration | `6h`    | `10m` to `168h`  | How long every run must have failed. The streak starts when the first Job after the last success fails. |
 | `minFailedRuns`   | integer  | `3`     | `1` to `1000`    | Failed runs counted in the streak. It keeps an hourly or daily job from being paused after one or two failures. |
+| `failureRate.enabled`    | bool    | `true` |                 | Also pause a CronJob that fails most of its recent runs, even with a success now and then. `false` removes every run history on the next cycle; the streak rule is unaffected. |
+| `failureRate.windowRuns` | integer | `10`   | `3` to `100`    | How many recent runs are judged. The rule waits until this many are recorded. |
+| `failureRate.threshold`  | string  | `80%`  | `51%` to `100%` | The share of those runs that must have failed. `"80"` is read as `80%`. |
+
+The failure-rate rule makes a CronJob a candidate when its window is full, at
+least `threshold` of the runs failed, the newest run failed, and its run
+history began at least `failingDuration` ago. Either rule is enough. See
+[CronJobs](cronjobs.md#6-the-failure-rate-rule).
+
+**Upgrading to a version with the failure-rate rule:** it is on by default,
+so in `full` mode it can pause CronJobs that the streak rule never would.
+Run in `report` mode first and look at the `ReapPlanned` Events, or set
+`failureRate.enabled: false` until you have.
 
 A CronJob that is already suspended is never a candidate.
 
@@ -204,6 +217,8 @@ annotations on the workload (not labels, and not on the namespace):
 | `reaper.boop.ninja/min-restarts`       | Deployment, StatefulSet, DaemonSet  | `detection.minRestarts`       | `1` to `10000`  |
 | `reaper.boop.ninja/failing-duration`   | CronJob                             | `cronJobs.failingDuration`    | `10m` to `168h` |
 | `reaper.boop.ninja/min-failed-runs`    | CronJob                             | `cronJobs.minFailedRuns`      | `1` to `1000`   |
+| `reaper.boop.ninja/failure-window`     | CronJob                             | `cronJobs.failureRate.windowRuns` | `3` to `100` |
+| `reaper.boop.ninja/failure-threshold`  | CronJob                             | `cronJobs.failureRate.threshold`  | `51` to `100`, `%` optional |
 
 **An override can only raise a threshold.** The reaper uses the larger of the
 annotation and the global value. An annotation below the global value has no
@@ -213,7 +228,9 @@ A value that cannot be parsed, or is outside the allowed range, is ignored:
 the global value applies and the reaper records a `ConfigInvalid` Warning
 Event on the workload.
 
-There is no override for `recoveryWindow`.
+`reaper.boop.ninja/failure-rate=off` on a CronJob turns the failure-rate rule
+off for it; `off` is the only valid value. There is no override for
+`recoveryWindow`.
 
 ## 5. When the config is invalid
 
@@ -387,6 +404,10 @@ spec:
     enabled: true
     failingDuration: 6h        # 10m to 168h
     minFailedRuns: 3           # 1 to 1000
+    failureRate:
+      enabled: true
+      windowRuns: 10           # 3 to 100
+      threshold: "80%"         # 51% to 100%
   notifications:               # see notifications.md
     enabled: true
     clusterName: ""            # up to 63 characters

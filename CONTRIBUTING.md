@@ -579,6 +579,7 @@ be left out.
 | US4 | `us4_config.rs` | Config changes apply without a restart: namespace and workload mode labels, the reaper's own namespace is never reaped (SC-005). |
 | US5 | `us5_cronjob.rs` | A CronJob whose runs keep failing is suspended, a flaky one is not, and restore resumes it, also under Flux (SC-008). |
 | US6 | `us6_notify.rs` | Report-mode candidates are notified once to the echo webhook and Mailpit (SC-009). Needs `make dev-notify` first. Reads only. |
+| US9 | `us9_flaky_cronjob.rs` | A CronJob that fails 4 runs in 5 is recorded run by run, planned on the rate in report mode and suspended in full mode (spec 003, SC-001, SC-006). Creates and deletes its own CronJob in `cron-rate`. |
 
 The files are in `apps/k8s-reaper/tests/`. `tests/common/mod.rs` builds the
 client and runs the guard. `tests/full/mod.rs` holds the helpers the full-mode

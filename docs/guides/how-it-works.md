@@ -97,6 +97,17 @@ A workload that crash-loops while some of its replicas are still available is
 a crash loop, and can become a candidate. It is never acted on, though: see
 `PartiallyAvailable` in [section 5](#5-skip-reasons).
 
+### CronJobs
+
+A CronJob is judged by its Jobs instead, under two rules; either one makes
+it a candidate. The **streak** rule needs every run to have failed for
+`cronJobs.failingDuration` and at least `minFailedRuns` times. The
+**failure-rate** rule needs most of its last `failureRate.windowRuns` runs
+(by default 8 of 10) to have failed, the newest included, so a CronJob that
+fails almost always but succeeds now and then is caught too. The reaper
+keeps its own record of each run, because Jobs are often deleted soon after
+they finish. See [CronJobs](cronjobs.md).
+
 ## 3. The state lifecycle
 
 The reaper keeps one label on each workload it is tracking,
@@ -307,7 +318,7 @@ always skipped with `CannotScaleToZero`, in both modes.
 | `reaper.boop.ninja/previous-reconcile` | annotation | When it set the Flux reconcile annotation. |
 | `reaper.boop.ninja/helmrelease` | annotation | When it holds the owning HelmRelease. |
 | `reaper.boop.ninja/reaped-at` | annotation | When the reap is done. |
-| `reaper.boop.ninja/failing-since`, `failed-runs`, `last-failed-job` | annotation | CronJobs only, see [CronJobs](cronjobs.md). |
+| `reaper.boop.ninja/failing-since`, `failed-runs`, `last-failed-job`, `run-history` | annotation | CronJobs only, see [CronJobs](cronjobs.md). |
 | `kustomize.toolkit.fluxcd.io/reconcile` | annotation | Full mode, Flux Kustomization-managed workloads, see [Flux](flux.md). |
 
 The label and annotations sit on the workload's own metadata, never on the pod

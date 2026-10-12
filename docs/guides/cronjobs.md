@@ -2,7 +2,9 @@
 
 This guide explains how k8s-reaper handles CronJobs: when a CronJob counts as
 failing, how failed runs are counted, when it is paused, and what happens
-after you resume it. Read it if you run scheduled jobs and want to know when
+after you resume it. Two rules can pause a CronJob: a **failing streak**
+(every run failing for a while) and a **failure rate** (most recent runs
+failing, even with a success now and then). Read it if you run scheduled jobs and want to know when
 the reaper would pause one. CronJobs go through the same states, limits and
 Flux holds as Deployments, described in [how it works](how-it-works.md) and
 [Flux](flux.md). The settings are in
@@ -14,9 +16,10 @@ Flux holds as Deployments, described in [how it works](how-it-works.md) and
 A CronJob's pods belong to Jobs, and the reaper ignores Job pods when it looks
 for crash loops. A Job stops retrying by itself when it reaches its
 `backoffLimit`. What wastes resources is a CronJob that starts a new Job on
-every schedule, and every one fails. So the reaper judges a CronJob by the
+every schedule, and most of them fail. So the reaper judges a CronJob by the
 outcome of its Jobs: a run of failures with no success in between, called a
-failing streak.
+failing streak, and the share of failures among its recent runs (see
+[section 6](#6-the-failure-rate-rule)).
 
 To pause it, the reaper sets `spec.suspend: true` on the CronJob, so no new
 Jobs are started. It never deletes a Job and never stops one that is
@@ -29,8 +32,12 @@ running.
 | `cronJobs.enabled` | `true` | | Watch CronJobs at all. |
 | `cronJobs.failingDuration` | `6h` | `10m` to `168h` | How long the streak must have lasted. |
 | `cronJobs.minFailedRuns` | `3` | `1` to `1000` | How many failed runs the streak must contain. |
+| `cronJobs.failureRate.enabled` | `true` | | Use the failure-rate rule. |
+| `cronJobs.failureRate.windowRuns` | `10` | `3` to `100` | How many recent runs the rate is judged on. |
+| `cronJobs.failureRate.threshold` | `80%` | `51%` to `100%` | The share of those runs that must have failed. |
 
-A CronJob becomes a candidate only when **both** are met. The two together
+The streak rule makes a CronJob a candidate only when **both** of its
+thresholds are met. The two together
 handle any schedule: a CronJob that runs every minute reaches 3 failed runs
 quickly but must still fail for 6 hours, and a daily one reaches 6 hours
 after its second failure but must fail 3 times.
@@ -64,7 +71,7 @@ Each cycle, the reaper looks at the Jobs the CronJob owns:
 Then:
 
 1. If no Job has finished yet, nothing changes.
-2. If the most recent finished Job succeeded, the CronJob is healthy (see
+2. If the most recent finished Job succeeded, there is no streak (see
    [section 5](#5-what-healthy-clears)).
 3. Otherwise the CronJob is failing. The last success is the later of the
    newest successful Job still listed and the CronJob's
@@ -112,24 +119,99 @@ kubectl get cronjob/ingest -n shop -o json \
 
 ## 5. What "healthy" clears
 
-As soon as the most recent finished Job succeeds, the reaper clears its state
-from the CronJob: the state label and `failing-since`, `failed-runs`,
-`last-failed-job` and the plan. It records a `JobFailuresRecovered` Event.
+A success ends the streak: `failing-since` and `failed-runs` are cleared, and
+the next failure starts a new streak at 0. The CronJob is healthy once the
+streak has ended **and** its run history (see [section 6](#6-the-failure-rate-rule))
+holds no failures. Then the reaper clears its state from the CronJob: the
+state label, the run history and the plan. It records a
+`JobFailuresRecovered` Event.
 
-There is no recovery window for CronJobs, unlike crash loops. One success is
-enough, because it shows that the job can do its work.
+With the failure-rate rule off, there is no run history, so one success is
+enough. With it on, a CronJob that succeeds now and then stays `observed`
+until its failures have left the window.
 
-A CronJob that succeeds some of the time is therefore never paused. Each
-success ends the streak, and the next failure starts a new one at 0. To be
-paused, a CronJob must fail every run for `failingDuration` and at least
-`minFailedRuns` times.
+## 6. The failure-rate rule
 
-## 6. The lifecycle
+A CronJob that fails 8 runs in 10 but succeeds in between never builds a
+streak. The failure-rate rule catches it.
+
+### How runs are recorded
+
+Jobs are often deleted soon after they finish, by `ttlSecondsAfterFinished`
+or the history limits, so the reaper keeps its own record of each run in the
+annotation `reaper.boop.ninja/run-history`:
+
+- A history begins with a failing streak. A CronJob that has only ever
+  succeeded carries nothing.
+- Each cycle, every finished Job newer than the last recorded run is added,
+  oldest first, once. A Job is never recorded twice, across cycles and
+  restarts.
+- A success whose Job was deleted before the reaper saw it is still recorded,
+  from the CronJob's `status.lastSuccessfulTime`, with `job: null`.
+- The history keeps only the last `windowRuns` runs. It is removed when it
+  holds no failures.
+
+### When it makes a candidate
+
+All four must hold:
+
+1. The window is full: `windowRuns` runs are recorded.
+2. At least `threshold` of them failed.
+3. The newest run failed.
+4. The history began at least `failingDuration` ago, so a CronJob that runs
+   every minute is not judged on its first 10 minutes.
+
+The reason then names the rate, for example
+`8 of last 10 runs failed, last job "ingest-29340000" failed (BackoffLimitExceeded)`.
+When the streak rule is met too, both are named, joined by `; `.
+
+### Per-CronJob annotations
+
+| Annotation | Allowed | Effect |
+| ---------- | ------- | ------ |
+| `reaper.boop.ninja/failure-window` | `3` to `100` | Raises `windowRuns` for this CronJob. |
+| `reaper.boop.ninja/failure-threshold` | `51` to `100`, with or without `%` | Raises `threshold` for this CronJob. |
+| `reaper.boop.ninja/failure-rate` | `off` | Turns the rule off for this CronJob and removes its run history. The streak rule still applies. |
+
+As with the streak thresholds, a value below the global one has no effect,
+and an unusable value is ignored with a `ConfigInvalid` Event on the CronJob.
+
+```sh
+kubectl annotate cronjob/ingest -n shop reaper.boop.ninja/failure-threshold=90%
+```
+
+### Reading the history
+
+```sh
+kubectl get cronjob/ingest -n shop -o json \
+  | jq -r '.metadata.annotations["reaper.boop.ninja/run-history"] | fromjson
+           | "\([.runs[] | select(.ok|not)] | length) of \(.runs | length) failed since \(.since)"'
+```
+
+```text
+8 of 10 failed since 2026-10-10T03:00:12Z
+```
+
+The gauge `reaper_cronjob_window_runs` shows the same counts, see
+[monitoring](monitoring.md).
+
+### Known limits
+
+- **Unseen failures are not counted.** A failed Job that is created and
+  deleted between two cycles leaves no trace, so it is never recorded.
+- **Fast CronJobs with short TTLs are under-recorded.** A CronJob that runs
+  more often than the cycle interval (default 1m), with Jobs deleted faster
+  than that, can lose runs on both sides. The rate can be off either way, but
+  the window must still fill with seen runs.
+- **`failedJobsHistoryLimit: 0` with a short TTL evades the rule**, as it
+  does the streak rule (see [section 4](#4-counting-failed-runs)).
+
+## 7. The lifecycle
 
 | State | For a CronJob |
 | ----- | ------------- |
-| `observed` | Failing, below at least one threshold. Event `JobFailuresObserved`. |
-| `candidate` | Both thresholds met. A plan is published; in report mode the Event is `ReapPlanned`. |
+| `observed` | Failing, or failures still in its run history, and no rule met yet. Event `JobFailuresObserved`. |
+| `candidate` | The streak rule or the failure-rate rule met. A plan is published; in report mode the Event is `ReapPlanned`. |
 | `reaping` | Full mode is pausing it. |
 | `reaped` | `spec.suspend: true`. The `Reaped` Event's note says `suspended`. |
 
@@ -152,7 +234,7 @@ A CronJob that someone else has suspended, or one with
 `reaper.boop.ninja/mode=off`, is not tracked. Any state is cleared without an
 Event.
 
-## 7. Resuming and what happens next
+## 8. Resuming and what happens next
 
 Any of these resumes a paused CronJob:
 
@@ -171,7 +253,8 @@ Any of these resumes a paused CronJob:
 
 - `reaper.boop.ninja/mode=off` on the CronJob or its namespace.
 
-On restore the reaper releases its Flux holds, clears its state, and leaves
+On restore the reaper releases its Flux holds, clears its state (including the
+run history, so the failure rate starts over too), and leaves
 one annotation behind: `reaper.boop.ninja/last-failed-job`, set to the newest
 failed Job. That watermark stops the failures from before the pause from
 being counted again:
@@ -182,14 +265,14 @@ being counted again:
   watermark annotation stays; it only marks which failures have been
   counted.
 - If the next run fails, a new streak starts at that failure, with the count
-  at 1. The CronJob must again fail for `failingDuration` and
-  `minFailedRuns` times before it is paused again.
+  at 1, and a new run history with one run. The CronJob must again meet a
+  rule in full before it is paused again.
 
 So resuming a CronJob that is still broken does not get it paused at once on
 the next cycle. It gets the same full allowance as a CronJob that has never
 failed.
 
-## 8. Flux-managed CronJobs
+## 9. Flux-managed CronJobs
 
 A CronJob applied by a Flux Kustomization or rendered by a HelmRelease gets
 the same holds as a Deployment: the `kustomize.toolkit.fluxcd.io/reconcile:

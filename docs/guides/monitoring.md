@@ -88,7 +88,9 @@ curl -s localhost:8080/metrics | grep '^reaper_'
 | ------ | ---- | ------ | ------- |
 | `reaper_workload_state` | gauge | `namespace`, `kind`, `name`, `state` | `1` for each tracked workload, with its current state. |
 | `reaper_workload_skipped` | gauge | `namespace`, `kind`, `name`, `reason` | `1` while a candidate is skipped, with the skip reason. |
-| `reaper_workload_crashloop_seconds` | gauge | `namespace`, `kind`, `name` | Seconds since the crash loop started (`crashloop-since`), or since a CronJob started failing (`failing-since`). |
+| `reaper_workload_crashloop_seconds` | gauge | `namespace`, `kind`, `name` | Seconds since the crash loop started (`crashloop-since`), or for a CronJob since the earlier of `failing-since` and the start of its run history. |
+| `reaper_cronjob_window_runs` | gauge | `namespace`, `name`, `outcome` | Runs in a CronJob's failure-rate window, by `outcome` (`failed`, `succeeded`). Present while it has a run history. See [CronJobs](cronjobs.md#6-the-failure-rate-rule). |
+| `reaper_cronjob_rule` | gauge | `namespace`, `name`, `rule` | `1` for each rule (`streak`, `failure_rate`) a candidate CronJob meets. Present only while it is a candidate. |
 | `reaper_actions_total` | counter | `action`, `result`, `mode` | Reap and restore steps, by outcome, and failed writes of the reaper's own record (`action="record"`). |
 | `reaper_cycles_total` | counter | `result` | Cycles, `ok` or `error`. |
 | `reaper_cycle_duration_seconds` | histogram | none | Time to decide and act in one cycle. 12 buckets from 0.05 s, doubling up to 102.4 s. |
@@ -111,13 +113,17 @@ curl -s localhost:8080/metrics | grep '^reaper_'
 | `result` (actions) | `success`, `error`, or `planned` (report mode: a reap that full mode would have run) |
 | `mode` | `report` or `full`, the global mode at the time |
 | `result` (notifications) | `sent`, `failed`, `dropped`, `filtered` |
+| `outcome` | `failed`, `succeeded` |
+| `rule` | `streak`, `failure_rate` |
 
 ### 3.3 How the series behave
 
 - **Per-workload series exist only while the workload has a state.** When a
   workload recovers or is restored, its `reaper_workload_state`,
   `reaper_workload_skipped` and `reaper_workload_crashloop_seconds` series
-  disappear. A state change replaces the series: there is never a `0` for
+  disappear. A CronJob's `reaper_cronjob_window_runs` series go when its run
+  history does, and `reaper_cronjob_rule` when it stops being a candidate
+  (once it is `reaped`, its `reason` annotation names the rule). A state change replaces the series: there is never a `0` for
   the old state.
 - **A skipped candidate is still a candidate.** It has both
   `reaper_workload_state{state="candidate"}` and `reaper_workload_skipped`.
@@ -488,6 +494,13 @@ sum by (reason) (reaper_workload_skipped)
 
 # The ten longest crash loops, in hours
 topk(10, reaper_workload_crashloop_seconds) / 3600
+
+# Each CronJob's failed share of its recent runs
+reaper_cronjob_window_runs{outcome="failed"}
+  / ignoring(outcome) sum without(outcome) (reaper_cronjob_window_runs)
+
+# CronJob candidates by the rule that fired
+sum by (rule) (reaper_cronjob_rule)
 
 # Reaps in the last day (full mode)
 sum(increase(reaper_actions_total{action="reap", result="success"}[24h]))

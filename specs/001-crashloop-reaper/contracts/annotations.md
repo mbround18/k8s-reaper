@@ -1,8 +1,8 @@
 # Contract: annotations
 
 Prefix `reaper.boop.ninja/` (Question 1, answered). The reaper owns every key under
-it except the person-set keys: `restore`, `mode` and the four threshold
-overrides. The reaper deletes `restore` once it has acted on it, and never
+it except the person-set keys: `restore`, `mode`, the four threshold
+overrides and the three failure-rate keys. The reaper deletes `restore` once it has acted on it, and never
 touches the others. Changing a key or its format is a
 breaking change.
 
@@ -23,6 +23,9 @@ breaking change.
 | `reaper.boop.ninja/min-restarts`      | person | any time                            | Integer; raises `detection.minRestarts` for this workload                                               |
 | `reaper.boop.ninja/failing-duration`  | person | any time (CronJob)                  | Duration; raises `cronJobs.failingDuration` for this CronJob                                            |
 | `reaper.boop.ninja/min-failed-runs`   | person | any time (CronJob)                  | Integer; raises `cronJobs.minFailedRuns` for this CronJob                                               |
+| `reaper.boop.ninja/failure-window`    | person | any time (CronJob)                  | Integer 3–100; raises `cronJobs.failureRate.windowRuns` for this CronJob, never lowers it               |
+| `reaper.boop.ninja/failure-threshold` | person | any time (CronJob)                  | Percent 51–100, written `85` or `85%`; raises `cronJobs.failureRate.threshold` for this CronJob, never lowers it |
+| `reaper.boop.ninja/failure-rate`      | person | any time (CronJob)                  | `off`: the failure-rate rule does not apply to this CronJob, and its run history is removed. Any other value is reported with `ConfigInvalid` |
 | `reaper.boop.ninja/mode`              | person | any time                            | `off` or `report` (same meaning as the label, see labels.md); the label wins if both are present and differ, then the most restrictive applies |
 
 CronJob-only keys (US5). On a CronJob, `crashloop-since`, `healthy-since` and
@@ -33,9 +36,41 @@ CronJob-only keys (US5). On a CronJob, `crashloop-since`, `healthy-since` and
 | `reaper.boop.ninja/failing-since`     | reaper | state `observed` onward    | RFC 3339 UTC: completion time of the first failed Job after the last success            |
 | `reaper.boop.ninja/failed-runs`       | reaper | state `observed` onward    | Decimal count of distinct failed Jobs seen in the streak                                |
 | `reaper.boop.ninja/last-failed-job`   | reaper | state `observed` onward; kept after a restore | Name of the last failed Job counted, so a Job is never counted twice. A restore sets it to the newest failed Job, so the streak starts again from zero |
+| `reaper.boop.ninja/run-history`       | reaper | from the first recorded failure until the window holds no failures, a restore, or the rule is turned off | Compact JSON of the failure-rate window, see below |
 
-On a CronJob, `reason` reads, for example:
-`7 failed runs since 2026-10-10T02:00:00Z, last job "ingest-29340000" failed (BackoffLimitExceeded)`.
+`run-history` reads, wrapped here:
+
+```json
+{"since":"2026-10-12T02:00:53Z",
+ "runs":[{"job":"backup-29340000","at":"2026-10-12T02:00:53Z","ok":false},
+         {"job":null,"at":"2026-10-13T02:00:40Z","ok":true}]}
+```
+
+- `since`: RFC 3339 UTC, the finish time of its first recorded failure.
+- `runs`: oldest first, at most the effective window size. `at` is the
+  Job's finish time. `job` is `null` for a success inferred from the
+  CronJob's `status.lastSuccessfulTime` because the Job was deleted before
+  the reaper saw it.
+- Unknown fields or invalid JSON make the value unreadable: the reaper
+  treats the CronJob as having no history, reports `ConfigInvalid` naming
+  the key, and replaces the value on its next write.
+
+Read the counts:
+
+```sh
+kubectl get cronjob NAME -n NS -o json \
+  | jq -r '.metadata.annotations["reaper.boop.ninja/run-history"] | fromjson
+           | "\([.runs[] | select(.ok|not)] | length) of \(.runs | length) failed since \(.since)"'
+```
+
+On a CronJob, `reason` names the rule that was met:
+
+| Rule met    | Example |
+| ----------- | ------- |
+| streak only | `7 failed runs since 2026-10-10T02:00:00Z, last job "ingest-29340000" failed (BackoffLimitExceeded)` |
+| rate only   | `8 of last 10 runs failed, last job "ingest-29340000" failed (BackoffLimitExceeded)` |
+| both        | `8 of last 10 runs failed; 7 failed runs since 2026-10-10T02:00:00Z, last job "ingest-29340000" failed (BackoffLimitExceeded)` |
+
 Reap step "scale to 0" becomes "set `spec.suspend: true`". Restore sets
 `spec.suspend: false`.
 

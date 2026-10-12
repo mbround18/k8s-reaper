@@ -92,8 +92,30 @@ pub struct WorkloadRow {
     pub workload: WorkloadRef,
     pub state: State,
     pub skipped: Option<SkipReason>,
-    /// `now - crashloop-since` (or `failing-since`).
+    /// `now - crashloop-since` (for a CronJob, the earlier of
+    /// `failing-since` and its run history's start).
     pub crashloop_seconds: Option<i64>,
+    /// A CronJob's recorded runs in its window: failed, succeeded (spec 003).
+    pub window_runs: Option<(u32, u32)>,
+    /// The rules a `candidate` CronJob meets this cycle.
+    pub rules: Vec<CronRule>,
+}
+
+/// A rule that makes a CronJob a candidate (spec 003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CronRule {
+    Streak,
+    FailureRate,
+}
+
+impl CronRule {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CronRule::Streak => "streak",
+            CronRule::FailureRate => "failure_rate",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
