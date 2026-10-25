@@ -20,7 +20,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: mbround18/paws/actions/paws-up@f84ca66721b657788672c06b41661a79afe07dd7 # main
+      - uses: mbround18/paws/actions/paws-up@8bf661fcf8124fb6a7556300b2d7801796b40c25 # main
         with:
           version: v0.0.1-prerelease.53
       # v0.1.1 publishes mbround18/k8s-reaper:0.1.1 and :latest on Docker Hub,
